@@ -26,4 +26,4 @@ this function to generate the synthetic data during execution.
 
 ### Real-world daata
 
-All realp-world datasets used in the paper are located in the `data/` directory.
+All real-world datasets used in the paper (i.e., GoogleTrends datasets) are located in the `data/` directory.
