@@ -171,6 +171,38 @@ def emp_for_init(X):
     return np.array([Sbar for _ in range(T)])
 
 
+def _normalize_tvgl_X(X):
+    """
+    Normalize input into list[t] of ndarray with shape (N_t, D).
+    Accepts:
+      - ndarray (T, D)
+      - ndarray (T, N, D)
+      - list length T, each ndarray (D,) or (N_t, D)
+    """
+    if isinstance(X, np.ndarray):
+        if X.ndim == 2:
+            return [X[t][None, :] for t in range(X.shape[0])]
+        if X.ndim == 3:
+            return [X[t] for t in range(X.shape[0])]
+        raise ValueError("X ndarray must have shape (T, D) or (T, N, D).")
+
+    if isinstance(X, (list, tuple)):
+        if len(X) == 0:
+            raise ValueError("X must be non-empty.")
+        out = []
+        for t, Xt in enumerate(X):
+            arr = np.asarray(Xt)
+            if arr.ndim == 1:
+                out.append(arr[None, :])
+            elif arr.ndim == 2:
+                out.append(arr)
+            else:
+                raise ValueError(f"X[{t}] must have shape (D,) or (N_t, D).")
+        return out
+
+    raise ValueError("X must be ndarray or list/tuple.")
+
+
 def init_precision(emp_cov, mode='empirical', alpha_glasso=0.01, max_iter_glasso=200, tol=1e-2):
     if isinstance(mode, np.ndarray):
         return mode.copy()
@@ -419,6 +451,7 @@ def time_graphical_lasso_laplacian(
 
 def time_varying_graphical_lasso(
     emp_cov: np.ndarray, # shape: (n_time, n_features, n_features) = (T, dm, dm)
+    n_samples: np.ndarray = None, # shape: (n_time,) = (T,)
     prev_matrices: np.ndarray = None, # shape: (n_time, n_features, n_features) = (T, dm, dm)
     prev_dual_vars: np.ndarray = None, # shape: (n_time, n_features, n_features) = (T, dm, dm)
     alpha=0.01,            
@@ -518,7 +551,14 @@ def time_varying_graphical_lasso(
     divisor[0] -= 1
     divisor[-1] -= 1
 
-    n_samples = np.ones(emp_cov.shape[0]) # window size
+    if n_samples is None:
+        n_samples = np.ones(emp_cov.shape[0], dtype=float)
+    else:
+        n_samples = np.asarray(n_samples, dtype=float).reshape(-1)
+        if n_samples.shape[0] != emp_cov.shape[0]:
+            raise ValueError("n_samples length must match emp_cov.shape[0].")
+        if np.any(n_samples <= 0):
+            raise ValueError("n_samples must be positive.")
 
     checks = [
         convergence(
@@ -688,11 +728,11 @@ class TVGL():
         emp_cov : array-like, shape (n_time, n_features, n_features) = (T, Dn, Dn)
             Empirical covariance matrix (i.e., S).
         """
-        assert len(X.shape) == 2, "Input data must be 2D array."
-        self.emp_cov = emp_rank_one(X)
+        self.emp_cov, self.n_samples = emp_rank_one(X)
 
         self.Z_0, self.covariance_, self.checks, self.n_iter = time_varying_graphical_lasso(
             emp_cov=self.emp_cov,
+            n_samples=self.n_samples,
             alpha=self.alpha,
             rho=self.rho,
             beta=self.beta,
@@ -710,10 +750,25 @@ class TVGL():
         return self.Z_0
 
 def emp_rank_one(X):
-    emp = []
-    for t in range(len(X)):
-        emp.append(np.outer(X[t], X[t]))
-    return np.array(emp)
+    X_norm = _normalize_tvgl_X(X)
+    T = len(X_norm)
+    D = X_norm[0].shape[1]
+    emp = np.empty((T, D, D), dtype=float)
+    n_samples = np.empty(T, dtype=float)
+
+    for t in range(T):
+        Xt = np.asarray(X_norm[t], dtype=float)
+        if Xt.ndim != 2:
+            raise ValueError(f"Normalized X[{t}] must be 2D.")
+        if Xt.shape[1] != D:
+            raise ValueError(f"Feature dimension mismatch at t={t}.")
+        n_t = Xt.shape[0]
+        if n_t < 1:
+            raise ValueError(f"X[{t}] must contain at least one sample.")
+        emp[t] = (Xt.T @ Xt) / n_t
+        n_samples[t] = n_t
+
+    return emp, n_samples
 
 
 class StreamTVGL:
@@ -793,7 +848,7 @@ class StreamTVGL:
             init_list.append(self._inv_cov(emp_cov_seq[t]))
         return np.stack(init_list, axis=0)
 
-    def _solve_window(self, X_window: np.ndarray, is_init=False) -> Tuple[np.ndarray, np.ndarray, dict, int]:
+    def _solve_window(self, X_window, is_init=False) -> Tuple[np.ndarray, np.ndarray, dict, int]:
         """
         Returns
         -------
@@ -802,7 +857,7 @@ class StreamTVGL:
         checks : dict
         n_iter : int
         """
-        emp_cov_seq = emp_rank_one(X_window)  # shape: (W, D, D)
+        emp_cov_seq, n_samples = emp_rank_one(X_window)  # shape: (W, D, D), (W,)
         if is_init:
             init_inv_cov = None
         else:
@@ -810,6 +865,7 @@ class StreamTVGL:
 
         Z_0, covariance_, checks, n_iter = time_varying_graphical_lasso(
             emp_cov=emp_cov_seq,
+            n_samples=n_samples,
             alpha=self.alpha,
             rho=self.rho,
             beta=self.beta,
@@ -826,7 +882,7 @@ class StreamTVGL:
         )
         return Z_0, covariance_, checks, n_iter
 
-    def fit_stream(self, X: np.ndarray) -> List[np.ndarray]:
+    def fit_stream(self, X) -> List[np.ndarray]:
         """
         Parameters
         ----------
@@ -836,8 +892,9 @@ class StreamTVGL:
         -------
         latest_thetas : List[np.ndarray]
         """
-        assert X.ndim == 2, "X must be 2D array (N, D)."
-        N, D = X.shape
+        X = _normalize_tvgl_X(X)
+        N = len(X)
+        D = X[0].shape[1]
         W = self.window_size
         s = self.step_size
         assert N >= W, f"N(={N}) >= window_size(={W}) is required."
