@@ -8,11 +8,11 @@ import time
 from sklearn.covariance import graphical_lasso
 
 sys.path.append(os.path.abspath('../src'))
-from methods.KroneckerGL import KroneckerGL
-from common.utils import load_tensor, kronecker_multiple, hp_to_dirpath
-from common.synthetic import generate_kron_data
-from common.metric import ktvgl_eval, tvgl_eval
-from common.viz import viz_change_of_theta, viz_change_of_theta_flatten, viz_error_of_theta, viz_error_of_theta_flatten
+from ktvgl.methods.kronecker_gl import KroneckerGL
+from ktvgl.common.utils import load_tensor, kronecker_multiple, hp_to_dirpath
+from ktvgl.common.synthetic import generate_kron_data
+from ktvgl.common.metric import ktvgl_eval, tvgl_eval
+from ktvgl.common.viz import viz_change_of_theta, viz_change_of_theta_flatten, viz_error_of_theta, viz_error_of_theta_flatten
 
 
 def parse_args():

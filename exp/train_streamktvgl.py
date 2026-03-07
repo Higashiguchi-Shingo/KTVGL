@@ -6,11 +6,11 @@ import argparse
 import json, pickle
 
 sys.path.append(os.path.abspath('../src'))
-from methods.KroneckerTVGL import StreamKroneckerTVGL, time_varying_graphical_lasso
-from common.utils import load_tensor, kronecker_multiple, hp_to_dirpath
-from common.synthetic import generate_kron_data
-from common.metric import ktvgl_eval, tvgl_eval
-from common.viz import viz_change_of_theta, viz_change_of_theta_flatten, viz_error_of_theta, viz_error_of_theta_flatten
+from ktvgl.methods.kronecker_tvgl import StreamKroneckerTVGL, time_varying_graphical_lasso
+from ktvgl.common.utils import load_tensor, kronecker_multiple, hp_to_dirpath
+from ktvgl.common.synthetic import generate_kron_data
+from ktvgl.common.metric import ktvgl_eval, tvgl_eval
+from ktvgl.common.viz import viz_change_of_theta, viz_change_of_theta_flatten, viz_error_of_theta, viz_error_of_theta_flatten
 
 
 def parse_args():

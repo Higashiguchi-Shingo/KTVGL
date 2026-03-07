@@ -7,11 +7,11 @@ import json, pickle
 import time
 
 sys.path.append(os.path.abspath('../src'))
-from methods.TVGL import TVGL
-from common.utils import kronecker_multiple, hp_to_dirpath
-from common.synthetic import generate_kron_data
-from common.metric import tvgl_eval
-from common.viz import viz_change_of_theta_flatten, viz_error_of_theta_flatten
+from ktvgl.methods.tvgl.model import TVGL
+from ktvgl.common.utils import kronecker_multiple, hp_to_dirpath
+from ktvgl.common.synthetic import generate_kron_data
+from ktvgl.common.metric import tvgl_eval
+from ktvgl.common.viz import viz_change_of_theta_flatten, viz_error_of_theta_flatten
 
 def parse_args():
     parser = argparse.ArgumentParser()

@@ -1,7 +1,7 @@
 import numpy as np
 import os, sys
 #sys.path.append(os.path.abspath('..'))
-from methods.KroneckerGL import KroneckerGL
+from ktvgl.methods.kronecker_gl import KroneckerGL
 from sklearn.covariance import graphical_lasso
 
 

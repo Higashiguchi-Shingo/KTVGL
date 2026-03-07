@@ -1,29 +1,98 @@
-## Kronecker Time-Varying Graphical Lasso
+# KTVGL
 
-This repository provides the official implementation of "Interpretable Dynamic Network Modeling of Tensor Time Series via Kronecker Time-Varying Graphical Lasso" (WWW2026)
+Kronecker Time-Varying Graphical Lasso (KTVGL) implementation.
 
-[Paper link: https://arxiv.org/abs/2602.08197]
+Paper: [Interpretable Dynamic Network Modeling of Tensor Time Series via Kronecker Time-Varying Graphical Lasso](https://arxiv.org/abs/2602.08197)
 
-## Environment Setup
+## Package Layout
 
-This project uses Poetry for dependency management.
+Core library code is under:
 
-Install dependencies:
+- `src/ktvgl/common`
+- `src/ktvgl/methods`
+- `src/ktvgl/datasets`
+
+Experiment scripts are under `exp/`.
+
+## Installation
+
+### Local development
 
 ```bash
 poetry install
 ```
 
-## Dataset
+### Use from another project (GitHub)
 
-### Synthetic data
+```bash
+poetry add git+https://github.com/Higashiguchi-Shingo/KTVGL.git
+```
 
-Synthetic datasets are generated using the `generate_kron_data` function
-defined in `src/common/synthetic.py`.
+Then import:
 
-Experimental scripts (e.g., `exp/train_ktvgl.py`) automatically import and use
-this function to generate the synthetic data during execution.
+```python
+from ktvgl.methods.kronecker_tvgl import KroneckerTVGL, time_varying_graphical_lasso
+from ktvgl.common.synthetic import generate_kron_data
+```
 
-### Real-world daata
+## Quick Start
 
-All real-world datasets used in the paper (i.e., GoogleTrends datasets) are located in the `data/` directory.
+```python
+from ktvgl.methods.kronecker_tvgl import KroneckerTVGL, time_varying_graphical_lasso
+from ktvgl.common.synthetic import generate_kron_data
+
+X_seq, thetas_true = generate_kron_data(
+    dims=[10, 8],
+    breaks_list=[[0, 50], [0, 50]],
+    T=50,
+    samples_per_t=1,
+)
+
+model = KroneckerTVGL(
+    lambdas=[0.01, 0.01],
+    rhos=[2.0, 2.0],
+    tvgl_solver=time_varying_graphical_lasso,
+    init_method="empirical",
+)
+
+thetas_hat = model.fit(X_seq)
+```
+
+## Input Formats (`X_seq`)
+
+`KroneckerTVGL.fit` supports:
+
+1. Single sample per timestep:
+   - `ndarray`, shape `(T, d1, ..., dM)`
+2. Fixed multiple samples per timestep:
+   - `ndarray`, shape `(T, N, d1, ..., dM)`
+3. Variable samples per timestep:
+   - `list` of length `T`, each item `ndarray` with shape `(N_t, d1, ..., dM)`
+
+`mode` always refers to tensor modes `(d1, ..., dM)`, not the sample axis.
+
+## Synthetic Data
+
+Synthetic data generation is provided by `ktvgl.common.synthetic.generate_kron_data`.
+
+You can control per-timestep sample count via `samples_per_t`:
+
+- `samples_per_t=1` (default)
+- `samples_per_t=<int>` (fixed)
+- `samples_per_t=[N_0, ..., N_{T-1}]` (variable)
+
+## Experiments
+
+Run synthetic KTVGL experiment:
+
+```bash
+poetry run python exp/train_ktvgl.py \
+  --dims 20 30 \
+  --breaks-json '[[0,100],[0,100]]' \
+  --samples-per-t 5
+```
+
+## Notes
+
+- `init_method="Glasso"` is currently disabled.
+- Real-world datasets used in experiments are in `data/`.
