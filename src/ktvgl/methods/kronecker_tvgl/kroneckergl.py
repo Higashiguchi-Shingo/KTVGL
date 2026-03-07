@@ -520,6 +520,44 @@ class KroneckerTVGL:
         self.Thetas_seq = _out
 
         return self.Thetas_seq
+
+    @staticmethod
+    def compute_covariances_from_thetas(
+        Thetas_seq: list[list[np.ndarray]]
+    ) -> list[list[np.ndarray]]:
+        """
+        Compute covariance matrices by inverting each precision matrix in Thetas_seq.
+        """
+        covariances_seq = []
+        for thetas_t in Thetas_seq:
+            cov_t = []
+            for theta_m in thetas_t:
+                cov_m = np.linalg.pinv(theta_m, hermitian=True)
+                cov_t.append(sym(cov_m))
+            covariances_seq.append(cov_t)
+        return covariances_seq
+
+    @staticmethod
+    def compute_partial_correlations_from_thetas(
+        Thetas_seq: list[list[np.ndarray]],
+        eps: float = 1e-12
+    ) -> list[list[np.ndarray]]:
+        """
+        Compute partial correlation matrices from precision matrices in Thetas_seq.
+        """
+        partial_corr_seq = []
+        for thetas_t in Thetas_seq:
+            pc_t = []
+            for theta_m in thetas_t:
+                theta = sym(theta_m)
+                d = np.clip(np.diag(theta), eps, None)
+                inv_std = 1.0 / np.sqrt(d)
+                scale = np.outer(inv_std, inv_std)
+                pc = -theta * scale
+                np.fill_diagonal(pc, 1.0)
+                pc_t.append(sym(pc))
+            partial_corr_seq.append(pc_t)
+        return partial_corr_seq
     
     def get_scaled_Thetas(self):
         Thetas_seq = deepcopy(self.Thetas_seq)
