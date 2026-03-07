@@ -25,7 +25,7 @@ poetry install
 ### Use from another project (GitHub)
 
 ```bash
-poetry add git+https://github.com/Higashiguchi-Shingo/KTVGL.git
+poetry add "git+https://github.com/Higashiguchi-Shingo/KTVGL.git#multi-samples"
 ```
 
 Then import:
