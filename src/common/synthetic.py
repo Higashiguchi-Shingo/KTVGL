@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Sequence, List, Optional, Tuple
+from typing import Sequence, List, Optional, Tuple, Union
 
 
 def sym(A): return 0.5*(A + A.T)
@@ -53,23 +53,57 @@ def expand_over_time(thetas_segments: Sequence[np.ndarray], breakpoints: Sequenc
     assert len(out) == T, f"expected T={T}, actual={len(out)}"
     return out
 
-def sample_kron_gaussian(T: int, dims: Sequence[int], thetas_time: List[List[np.ndarray]], seed=None):
+def sample_kron_gaussian(
+    T: int,
+    dims: Sequence[int],
+    thetas_time: List[List[np.ndarray]],
+    seed=None,
+    samples_per_t: Union[int, Sequence[int]] = 1
+):
     """
-    thetas_time[t] = [Theta_t^(0), ..., Theta_t^(n-1)] is received,
-    and X_seq[t] (shape: dims) is generated one sample at a time.
+    thetas_time[t] = [Theta_t^(0), ..., Theta_t^(n-1)] is received.
+    Generate one or multiple samples per timestep.
     Supports any number of modes n = len(dims).
     """
     rng = np.random.default_rng(seed)
     n = len(dims)
-    X_seq = np.empty((T, *dims))
-    for t in range(T):
+
+    def _sample_one_timestep(t: int) -> np.ndarray:
         X = rng.standard_normal(size=tuple(dims))
         # Cholesky（Theta = L L^T）→ Sigma^{1/2} = L^{-T}
         for m in range(n):
             L = np.linalg.cholesky(thetas_time[t][m])
             L_inv_T = np.linalg.inv(L).T
             X = mode_product(X, L_inv_T, mode=m)
-        X_seq[t] = X
+        return X
+
+    if isinstance(samples_per_t, int):
+        if samples_per_t < 1:
+            raise ValueError("samples_per_t must be >= 1.")
+        if samples_per_t == 1:
+            X_seq = np.empty((T, *dims))
+            for t in range(T):
+                X_seq[t] = _sample_one_timestep(t)
+            return X_seq
+
+        X_seq = np.empty((T, samples_per_t, *dims))
+        for t in range(T):
+            for i in range(samples_per_t):
+                X_seq[t, i] = _sample_one_timestep(t)
+        return X_seq
+
+    if len(samples_per_t) != T:
+        raise ValueError("When samples_per_t is a sequence, its length must be T.")
+    if any(int(v) < 1 for v in samples_per_t):
+        raise ValueError("All values in samples_per_t must be >= 1.")
+
+    X_seq = []
+    for t in range(T):
+        n_t = int(samples_per_t[t])
+        Xt = np.empty((n_t, *dims))
+        for i in range(n_t):
+            Xt[i] = _sample_one_timestep(t)
+        X_seq.append(Xt)
     return X_seq
 
 def small_to_zero(Thetas_time: List[List[np.ndarray]], tol: float = 1e-6):
@@ -89,7 +123,8 @@ def generate_kron_data(
     p_edge: float = 0.25,
     w_range: Tuple[float, float] = (-3.0, 3.0),
     tol: float = 0.1,
-    gaussian_seed: Optional[int] = 42
+    gaussian_seed: Optional[int] = 42,
+    samples_per_t: Union[int, Sequence[int]] = 1
 ):
     """
     For an arbitrary number of modes N, create a time series of piecewise constant mode accuracy matrices,
@@ -107,7 +142,10 @@ def generate_kron_data(
         gaussian_seed: Random seed for observation generation
 
     Returns:
-        X_seq: shape = (T, *dims)
+        X_seq:
+            - samples_per_t == 1: ndarray, shape = (T, *dims)
+            - samples_per_t == N (>1): ndarray, shape = (T, N, *dims)
+            - samples_per_t is sequence: list length T, each ndarray shape = (N_t, *dims)
         thetas_time: list (length T) of list(length N) of np.ndarray(d_m, d_m)
     """
     dims = list(dims)
@@ -147,5 +185,11 @@ def generate_kron_data(
     thetas_time = small_to_zero(thetas_time, tol=tol)
 
     # generate observations
-    X_seq = sample_kron_gaussian(T, tuple(dims), thetas_time, seed=gaussian_seed)
+    X_seq = sample_kron_gaussian(
+        T,
+        tuple(dims),
+        thetas_time,
+        seed=gaussian_seed,
+        samples_per_t=samples_per_t
+    )
     return X_seq, thetas_time

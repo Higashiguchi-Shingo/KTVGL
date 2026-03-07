@@ -5,7 +5,7 @@ from copy import deepcopy
 import numpy as np
 from numpy.linalg import slogdet
 from .solver import time_varying_graphical_lasso
-from .initialize import init_precision, _init_from_empirical
+from .initialize import init_precision, _init_from_empirical, _normalize_X_seq
 from typing import List, Optional, Iterator
 import time
 
@@ -40,7 +40,45 @@ def mode_product(X: np.ndarray, A: np.ndarray, mode: int) -> np.ndarray:
     return np.moveaxis(Ym, 0, mode)
 
 
-def initialize_thetas(dims, method="identity", X_list=None, mle_steps=0, eps=1e-6):
+def _time_len(X_seq) -> int:
+    return len(X_seq)
+
+
+def _slice_time(X_seq, start: int, end: int):
+    return X_seq[start:end]
+
+
+def _samples_at_t(X_t, n_modes: int) -> list[np.ndarray]:
+    if not isinstance(X_t, np.ndarray):
+        raise ValueError("Each normalized X_seq[t] must be ndarray.")
+    if X_t.ndim != n_modes + 1:
+        raise ValueError(
+            f"Invalid normalized timestep ndim={X_t.ndim}; expected {n_modes + 1}."
+        )
+    return [X_t[n] for n in range(X_t.shape[0])]
+
+
+def _infer_dims(X_seq, n_modes: int) -> tuple[int, ...]:
+    T = _time_len(X_seq)
+    if T == 0:
+        raise ValueError("X_seq must be non-empty.")
+    X0 = X_seq[0]
+    samples0 = _samples_at_t(X0, n_modes)
+    if len(samples0) == 0:
+        raise ValueError("X_seq[0] must contain at least one sample.")
+    return tuple(samples0[0].shape)
+
+
+def _time_sample_counts(X_seq, n_modes: int) -> np.ndarray:
+    T = _time_len(X_seq)
+    counts = np.zeros(T, dtype=float)
+    for t in range(T):
+        X_t = X_seq[t]
+        counts[t] = len(_samples_at_t(X_t, n_modes))
+    return counts
+
+
+"""def initialize_thetas(dims, method="identity", X_list=None, mle_steps=0, eps=1e-6):
     n = len(dims)
     Theta = [np.eye(d) for d in dims]
 
@@ -57,7 +95,7 @@ def initialize_thetas(dims, method="identity", X_list=None, mle_steps=0, eps=1e-
             Theta[m] = np.linalg.inv(S_bar_reg)
             Theta[m] = sym(Theta[m])
 
-    return Theta
+    return Theta"""
 
 
 def compute_Shat(
@@ -100,6 +138,68 @@ def compute_Shat(
 
         eps = jitter_scale * max(1.0, np.trace(S) / max(d_m, 1))
         S_hats[t] = S + eps * np.eye(d_m)
+
+    return S_hats
+
+
+def compute_Shat_multi_sample(
+    X_seq,
+    Thetas_seq: list[list[np.ndarray]],
+    mode: int,
+    jitter_scale: float = 1e-8
+) -> np.ndarray:
+    """
+    X_seq: list-like (length T), variable #samples per timestep
+      - X_seq[t] can be:
+        1) ndarray (N_t, d1, ..., dM)
+        2) list/tuple of ndarray [(d1, ..., dM), ...] (length N_t)
+        3) ndarray (d1, ..., dM)  # interpreted as N_t = 1
+    Thetas_seq: list: (T, M, dm, dm), Thetas_seq[t] is list [Θ_t^(1),...,Θ_t^(M)]
+    mode: target mode
+
+    Return: S_hats (T, d_mode, d_mode), S_t^(m) for each timestep
+    """
+    M = len(Thetas_seq[0])
+    X_norm = _normalize_X_seq(X_seq, n_modes=M)
+    T = _time_len(X_norm)
+    if T == 0:
+        raise ValueError("X_seq must be non-empty.")
+    if len(Thetas_seq) != T:
+        raise ValueError("len(X_seq) and len(Thetas_seq) must match.")
+    dims = _infer_dims(X_norm, M)  # (d1,...,dM)
+    assert 0 <= mode < M, "mode index out of range"
+    d_m = dims[mode]
+    D_minus = int(np.prod([dims[k] for k in range(M) if k != mode]))
+
+    S_hats = np.zeros((T, d_m, d_m), dtype=float)
+
+    for t in range(T):
+        Thetas_t = Thetas_seq[t]
+        samples_t = _samples_at_t(X_norm[t], M)
+        N_t = len(samples_t)
+        if N_t == 0:
+            raise ValueError(f"X_seq[{t}] must contain at least one sample.")
+        S_t = np.zeros((d_m, d_m), dtype=float)
+
+        for X_tn in samples_t:
+            if X_tn.shape != dims:
+                raise ValueError(
+                    f"Sample shape mismatch at t={t}: expected {dims}, got {X_tn.shape}."
+                )
+
+            Y = X_tn
+            for ell in range(M):
+                if ell == mode:
+                    continue
+                Y = mode_product(Y, Thetas_t[ell], mode=ell)
+
+            Ym = np.moveaxis(Y, mode, 0).reshape(d_m, D_minus)
+            Xm = np.moveaxis(X_tn, mode, 0).reshape(d_m, D_minus)
+            S_t += (Ym @ Xm.T) / (D_minus * N_t)
+
+        S_t = sym(S_t)
+        eps = jitter_scale * max(1.0, np.trace(S_t) / max(d_m, 1))
+        S_hats[t] = S_t + eps * np.eye(d_m)
 
     return S_hats
 
@@ -202,7 +302,7 @@ def scale_correct_seq(
 
 
 def update_one_mode_tvgl(
-    X_seq: np.ndarray,                    # shape: (T, d1, ..., dM)
+    X_seq,                                # shape: (T, d1, ..., dM) or multi-sample list-like
     Thetas_seq: list[list[np.ndarray]],   # list: (T, M, dm, dm), array: (dm, dm)
     mode: int,                            
     tvgl_solver,              # tvgl_solver(S_hats, lam_bar, **kwargs) -> np.ndarray (T, d_m, d_m)
@@ -215,7 +315,6 @@ def update_one_mode_tvgl(
     strategy="anchor",
     anchor="next",
     verbose=False,
-    gamma=None,
     psi="laplacian",
     init_thetas: np.ndarray = None
 ):
@@ -225,11 +324,13 @@ def update_one_mode_tvgl(
     Returns: 
     Thetas_seq: updated precision matrices
     """
-    T = X_seq.shape[0]
-    dims = X_seq.shape[1:]
-    M = len(dims)
+    T = len(Thetas_seq)
+    M = len(Thetas_seq[0])
+    X_norm = _normalize_X_seq(X_seq, n_modes=M)
+    dims = _infer_dims(X_norm, M)
     d_m = dims[mode]
     D_minus = int(np.prod([dims[k] for k in range(M) if k != mode]))
+    n_samples = _time_sample_counts(X_norm, M)
 
     # (a) Compute S^(m)
     S_hats = compute_Shat_func(
@@ -237,23 +338,34 @@ def update_one_mode_tvgl(
         Thetas_seq=Thetas_seq, 
         mode=mode
     )   # S_hats: shape (T, d_m, d_m)
-    if gamma is not None:
-        S_hats *= gamma
 
     # (b) Solve TVGL -> get Theta (i.e., precision matrices)
     prev_matrices = [Thetas_seq[t][mode].copy() for t in range(T)]
     lam_bar = lambda_m / D_minus
     rho_bar = rho_m / D_minus
-    Theta_m_seq = tvgl_solver(
-        emp_cov=S_hats, 
-        alpha=lam_bar,
-        rho=rho_bar,
-        max_iter=max_iter_tvgl,
-        prev_matrices=prev_matrices,
-        verbose=verbose,
-        psi=psi,
-        init_inv_cov=init_thetas
-    ) # (T, d_m, d_m)
+    try:
+        Theta_m_seq = tvgl_solver(
+            emp_cov=S_hats, 
+            alpha=lam_bar,
+            rho=rho_bar,
+            max_iter=max_iter_tvgl,
+            n_samples=n_samples,
+            prev_matrices=prev_matrices,
+            verbose=verbose,
+            psi=psi,
+            init_inv_cov=init_thetas
+        ) # (T, d_m, d_m)
+    except TypeError:
+        Theta_m_seq = tvgl_solver(
+            emp_cov=S_hats, 
+            alpha=lam_bar,
+            rho=rho_bar,
+            max_iter=max_iter_tvgl,
+            prev_matrices=prev_matrices,
+            verbose=verbose,
+            psi=psi,
+            init_inv_cov=init_thetas
+        ) # (T, d_m, d_m)
 
     # (c) Scale correction
     updated = [] # updated Thetas_seq, shape: (T, M, dm, dm)
@@ -290,7 +402,7 @@ def update_one_mode_tvgl(
 
 # kronecker TVGL
 def kronecker_timevarying_graphical_lasso(
-    X_seq: np.ndarray,                     # shape: (T, d1, ..., dn)
+    X_seq,                                 # shape: (T, d1, ..., dn) or multi-sample list-like
     Thetas_seq: list[list[np.ndarray]],    # list: (T, M, dm, dm), array: (dm, dm)
     lambdas: list[float],                  # list: (M, )
     rhos: list[float],                     # list: (M, )
@@ -303,16 +415,14 @@ def kronecker_timevarying_graphical_lasso(
     max_iter_tvgl: int = 50,
     min_iter: int = 4,
     tol_flipflop: float = 1e-4,
-    tol_gamma: float = 1e-3,
     verbose: bool = False,
-    use_gamma: bool = False,
     psi: str = "laplacian", # "laplacian" or "l1"
     init_thetas: list[np.ndarray] = None,
     early_stopping: bool = True
 ):
+    X_seq = _normalize_X_seq(X_seq, n_modes=len(Thetas_seq[0]))
     pre_obj = None
-    gamma = 1 if use_gamma else None
-    M = len(X_seq.shape[1:])
+    M = len(Thetas_seq[0])
 
     for iter in range(max_iter):
         print("Iteration:", str(iter))
@@ -331,18 +441,10 @@ def kronecker_timevarying_graphical_lasso(
                 strategy=strategy,
                 anchor=anchor,
                 verbose=verbose,
-                gamma=gamma,
                 psi=psi,
                 init_thetas=init_thetas[mode] if init_thetas is not None else None
             )
-            if use_gamma:
-                if iter % 1 == 0:
-                    gamma = update_gamma(gamma, X_seq, Thetas_seq, compute_Shat_func)
-                    print("Gamma:", gamma)
-        if use_gamma:
-            obj = objective_function_gamma(X_seq, Thetas_seq, lambdas, rhos, gamma)
-        else:
-            obj = objective_function(X_seq, Thetas_seq, lambdas, rhos)
+        obj = objective_function(X_seq, Thetas_seq, lambdas, rhos)
 
         print("Score:", str(obj))
 
@@ -353,32 +455,7 @@ def kronecker_timevarying_graphical_lasso(
                     if early_stopping: break
         pre_obj = obj
 
-    if use_gamma:
-        return Thetas_seq, gamma
-    else:
-        return Thetas_seq
-
-
-
-def update_gamma(gamma, X_seq, Thetas_seq, compute_Shat_func, mode=0):
-    T   = int(X_seq.shape[0])
-    dims = X_seq.shape[1:]
-    D   = int(np.prod(dims))
-    d_q = int(dims[mode])
-    D_minus = D // d_q
-    S_hat = compute_Shat_func(X_seq, Thetas_seq, mode=mode)
-
-    denom = 0.0
-    for t in range(T):
-        Th = 0.5 * (Thetas_seq[t][mode] + Thetas_seq[t][mode].T)
-        Sh = 0.5 * (S_hat[t] + S_hat[t].T)
-        denom += D_minus * float(np.trace(Sh @ Th))
-
-    eps = max(1e-32, 1e-6 * (abs(denom) / max(T, 1)))
-    denom = max(denom, eps)
-
-    gamma = (T * D) / denom
-    return gamma
+    return Thetas_seq
 
 
 class KroneckerTVGL:
@@ -395,14 +472,13 @@ class KroneckerTVGL:
                  max_iter_tvgl=500,
                  tol_flipflop=1e-4,
                  verbose=False,
-                 use_gamma=False,
                  psi="laplacian", # "laplacian" or "l1"
                  early_stopping=True
     ):
         self.lambdas = lambdas
         self.rhos = rhos
         self.tvgl_solver = tvgl_solver
-        self.compute_Shat_func = compute_Shat
+        self.compute_Shat_func = compute_Shat_multi_sample
         self.gauge = gauge
         self.strategy = strategy
         self.anchor = anchor
@@ -412,20 +488,19 @@ class KroneckerTVGL:
         self.init_method = init_method
         self.tol_flipflop = tol_flipflop
         self.verbose = verbose
-        self.use_gamma = use_gamma
         self.psi = psi
         self.early_stopping = early_stopping
 
     def fit(self, X_seq):
-        self.X_seq = X_seq
-        self.dims = X_seq.shape[1:]
+        self.X_seq = _normalize_X_seq(X_seq, n_modes=len(self.lambdas))
+        self.dims = _infer_dims(self.X_seq, len(self.lambdas))
 
         # Initialize Thetas_seq by identity matrices
-        Thetas_seq = init_precision(X_seq, method=self.init_method, lambdas=self.lambdas)
+        Thetas_seq = init_precision(self.X_seq, method=self.init_method, lambdas=self.lambdas, n_modes=len(self.lambdas))
 
         # Run Kronecker time-varying graphical lasso
         _out = kronecker_timevarying_graphical_lasso(
-            X_seq=X_seq,
+            X_seq=self.X_seq,
             Thetas_seq=Thetas_seq,
             lambdas=self.lambdas,
             rhos=self.rhos,
@@ -439,65 +514,31 @@ class KroneckerTVGL:
             max_iter_tvgl=self.max_iter_tvgl,
             tol_flipflop=self.tol_flipflop,
             verbose=self.verbose,
-            use_gamma=self.use_gamma,
             psi=self.psi,
             early_stopping=self.early_stopping
         )
-        if self.use_gamma:
-            self.Thetas_seq, self.gamma = _out
-        else:
-            self.Thetas_seq, self.gamma = _out, None
+        self.Thetas_seq = _out
 
         return self.Thetas_seq
     
     def get_scaled_Thetas(self):
         Thetas_seq = deepcopy(self.Thetas_seq)
-        for t in range(self.X_seq.shape[0]):
+        for t in range(len(self.Thetas_seq)):
             for mode in range(len(self.dims)):
                 Thetas_seq[t][mode] = Thetas_seq[t][mode] / (np.trace(Thetas_seq[t][mode]) / self.dims[mode])     
         return Thetas_seq
 
 
-def objective_function_gamma(X_seq, Thetas_seq, lambdas, rhos, gamma, mode=0):
-    T = X_seq.shape[0]
-    dims = X_seq.shape[1:]  # (d1,...,dM)
-    D = np.prod(dims)
-    M = len(dims)
-    assert 0 <= mode < M, "mode index out of range"
-
-    # Compute the objective function value
-    obj = 0.0
-    S_hat = compute_Shat(X_seq, Thetas_seq, mode)
-
-    # log-likelihood terms
-    for t in range(T):
-        D_minus = int(np.prod([dims[k] for k in range(M) if k != mode]))
-        obj += gamma[t] * D_minus * np.trace(S_hat[t] @ Thetas_seq[t][mode])
-        for m in range(M):
-            D_minus = int(np.prod([dims[k] for k in range(M) if k != m]))
-            obj -= D_minus * logdet(Thetas_seq[t][m])
-        obj -= D * np.log(gamma[t])
-
-    # L1 norm terms
-    for t in range(T):
-        for m in range(M):
-            obj += lambdas[m] * l1_od_norm(Thetas_seq[t][m])
-
-    # TV regularization terms
-    for t in range(1,T):
-        for m in range(M):
-            obj += rhos[m] * squared_norm(Thetas_seq[t][m] - Thetas_seq[t-1][m])
-    return obj
-
 def objective_function(X_seq, Thetas_seq, lambdas, rhos, mode=0):
-    T = X_seq.shape[0]
-    dims = X_seq.shape[1:]  # (d1,...,dM)
-    M = len(dims)
+    T = len(Thetas_seq)
+    M = len(Thetas_seq[0])
+    X_norm = _normalize_X_seq(X_seq, n_modes=M)
+    dims = _infer_dims(X_norm, M)  # (d1,...,dM)
     assert 0 <= mode < M, "mode index out of range"
 
     # Compute the objective function value
     obj = 0.0
-    S_hat = compute_Shat(X_seq, Thetas_seq, mode)
+    S_hat = compute_Shat_multi_sample(X_norm, Thetas_seq, mode)
 
     # log-likelihood terms
     for t in range(T):
@@ -571,102 +612,6 @@ def l1_od_norm(precision):
     return l1_norm(precision) - np.abs(np.diag(precision)).sum()
 
 
-def scale_correct_with_gamma(
-    Thetas_t: list[np.ndarray],  # list of ndarray, [Θ_t^(1), ..., Θ_t^(M)], shape of Θ_t^(m): (dm, dm)
-    mode: int,
-    gauge: str = "trace",        # 'trace' | 'fro' | 'det'
-) -> list[np.ndarray]:
-    M = len(Thetas_t)  # number of modes
-    assert 0 <= mode < M
-    Thetas_t_copy = [A.copy() for A in Thetas_t]  # copy of Thetas_t
-
-    # (1) compute scaling factor
-    Theta_m = sym(Thetas_t_copy[mode]) # Θ_t^(m): (dm, dm)
-    s = compute_scale_factor(Theta=Theta_m, gauge=gauge)
-    if not np.isfinite(s) or s <= 0:
-        return Thetas_t_copy, s  # avoid scaling if s is invalid
-
-    # (2) scaling
-    Thetas_t_copy[mode] = sym(Theta_m / s)
-
-    return Thetas_t_copy, s
-
-def scale_correct_seq_with_gamma(
-    Thetas_seq: list[list[np.ndarray]], # shape: (T, M, dm, dm)
-    mode: int,
-    gauge: str = "trace",
-) -> list[list[np.ndarray]]:
-    """
-    Thetas_seq: list of list, {Thetas_t} (t = 0,1,...,T-1),
-    Thetas_t: list, {Theta_t^(1), ..., Theta_t^(M)} (m = 1 ~ M)
-    Theta_t: np.ndarray, shape = (d_m, d_m), precision matrix
-
-    Returns: list of scaled precision matrices
-    """
-    T = len(Thetas_seq)
-    gamma = []
-    Thetas_seq_scaled = []
-
-    for t in range(T):
-        Tcorr, s = scale_correct_with_gamma(
-            Thetas_t=Thetas_seq[t], 
-            mode=mode, 
-            gauge=gauge
-        )
-        gamma.append(s)
-        Thetas_seq_scaled.append(Tcorr)
-
-    return Thetas_seq_scaled , np.array(gamma)
-
-def scale_correct_tensor_with_gamma(
-    Thetas_seq: list[list[np.ndarray]], # shape: (T, M, dm, dm)
-    gauge: str = "trace",
-):
-    """
-    Thetas_seq: ndarray, shape = (T, M, dm, dm)
-    Thetas_t: list, {Theta_t^(1), ..., Theta_t^(M)} (m = 1 ~ M)
-    Theta_t: np.ndarray, shape = (d_m, d_m), precision matrix
-
-    Returns: 
-    - ndarray of scaled precision matrices, shape = (T, M, dm, dm)
-    - ndarray of gamma values, shape = (T,)
-    """
-    T = len(Thetas_seq)
-    M = len(Thetas_seq[0])
-    gamma = np.ones(T)
-
-    for mode in range(M):
-        Thetas_seq, g = scale_correct_seq_with_gamma(
-            Thetas_seq=Thetas_seq,
-            mode=mode,
-            gauge=gauge
-        )
-        gamma *= g
-    
-    return Thetas_seq, gamma
-
-def scale_objective_with_gamma(
-    X_seq: np.ndarray,
-    Thetas_seq: list[list[np.ndarray]],
-    lambdas: list[float],
-    rhos: list[float],
-    gauge: str = "trace",
-    mode: int = 0
-):
-    T = X_seq.shape[0]
-    dims = X_seq.shape[1:]  # (d1,...,dM)
-    M = len(dims)
-    assert 0 <= mode < M, "mode index out of range"
-
-    Thhetas_seq_scaled, gamma = scale_correct_tensor_with_gamma(
-        Thetas_seq=Thetas_seq,
-        gauge=gauge
-    )
-    obj = objective_function_gamma(X_seq, Thhetas_seq_scaled, lambdas, rhos, gamma)
-
-    return obj
-    
-
 class StreamKroneckerTVGL:
     def __init__(self,
         lambdas,
@@ -683,7 +628,6 @@ class StreamKroneckerTVGL:
         max_iter_tvgl: int = 500,
         tol_flipflop: float = 1e-4,
         verbose: bool = False,
-        use_gamma: bool = False,
         psi: str = "laplacian"
     ):
         assert window_size >= 2, "window_size must be >= 2"
@@ -694,7 +638,7 @@ class StreamKroneckerTVGL:
         self.lambdas = lambdas
         self.rhos = rhos
         self.tvgl_solver = tvgl_solver
-        self.compute_Shat_func = compute_Shat
+        self.compute_Shat_func = compute_Shat_multi_sample
         self.gauge = gauge
         self.strategy = strategy
         self.anchor = anchor
@@ -703,7 +647,6 @@ class StreamKroneckerTVGL:
         self.init_method = init_method
         self.tol_flipflop = tol_flipflop
         self.verbose = verbose
-        self.use_gamma = use_gamma
         self.psi = psi
 
         self._prev_thetas_seq: Optional[List[List[np.ndarray]]] = None
@@ -713,10 +656,11 @@ class StreamKroneckerTVGL:
         self.history_: List[List[List[np.ndarray]]] = []
         self.runtimes: List[float] = []
 
-    def _init_for_window(self, X_window: np.ndarray) -> List[List[np.ndarray]]:
+    def _init_for_window(self, X_window) -> List[List[np.ndarray]]:
         W = self.window_size
-        dims = X_window.shape[1:]
-        M = len(dims)
+        M = len(self.lambdas)
+        X_window = _normalize_X_seq(X_window, n_modes=M)
+        dims = _infer_dims(X_window, M)
 
         if self._prev_thetas_seq is None:
             return init_precision(X_window, method=self.init_method, lambdas=self.lambdas)  # list[W][m] -> (d_m,d_m)
@@ -730,12 +674,13 @@ class StreamKroneckerTVGL:
 
         for t in range(overlap, W):
             X_t = X_window[t]
-            init_list.append(_init_from_empirical(X_t))
+            init_list.append(_init_from_empirical(X_t, n_modes=M))
 
         return init_list  # list[W][m] -> (d_m,d_m)
 
 
-    def _solve_window(self, X_window: np.ndarray, is_init=False) -> List[List[np.ndarray]]:
+    def _solve_window(self, X_window, is_init=False) -> List[List[np.ndarray]]:
+        X_window = _normalize_X_seq(X_window, n_modes=len(self.lambdas))
         Thetas_seq = self._init_for_window(X_window)
         init_thetas = Thetas_seq[0].copy()
         if is_init:
@@ -755,26 +700,23 @@ class StreamKroneckerTVGL:
             max_iter_tvgl=self.max_iter_tvgl,
             tol_flipflop=self.tol_flipflop,
             verbose=self.verbose,
-            use_gamma=self.use_gamma,
             psi=self.psi,
             init_thetas=init_thetas,
             early_stopping=True
         )
-        if self.use_gamma:
-            Thetas_seq, self.gamma = out
-        else:
-            Thetas_seq, self.gamma = out, None
+        Thetas_seq = out
 
         return Thetas_seq  # list[W][m] -> (d_m,d_m)
 
-    def fit_stream(self, X_seq: np.ndarray) -> List[List[np.ndarray]]:
+    def fit_stream(self, X_seq) -> List[List[np.ndarray]]:
         """
         Returns
         -------
         latest_thetas_per_mode : list[step][m] -> ndarray (d_m, d_m)
         """
-        assert X_seq.ndim >= 2, "X_seq must have shape (T, d1, ..., dn)."
-        T_total = X_seq.shape[0]
+        X_seq = _normalize_X_seq(X_seq, n_modes=len(self.lambdas))
+        self.dims = _infer_dims(X_seq, len(self.lambdas))
+        T_total = _time_len(X_seq)
         W = self.window_size
         s = self.step_size
         assert T_total >= W, f"T(={T_total}) >= window_size(={W}) must hold."
@@ -786,11 +728,11 @@ class StreamKroneckerTVGL:
         # init window
         start = 0
         print("Processing window: ", str(start), "~", str(start + W - 1))
-        Xw = X_seq[start:start+W]
+        Xw = _slice_time(X_seq, start, start + W)
         Thetas_seq = self._solve_window(Xw, is_init=True) # list[W][m]
         self._prev_thetas_seq = Thetas_seq
         self.latest_thetas_per_mode_.append([Thetas_seq[-1][m].copy()
-                                             for m in range(len(X_seq.shape) - 1)])
+                                             for m in range(len(self.dims))])
         # self.history_.append([[Th.copy() for Th in Thetas_seq_t] for Thetas_seq_t in Thetas_seq])
 
         # sliding windows
@@ -799,13 +741,13 @@ class StreamKroneckerTVGL:
             print("Processing window: ", str(start), "~", str(start + W - 1))
             start_time = time.time()
 
-            Xw = X_seq[start:start+W]
+            Xw = _slice_time(X_seq, start, start + W)
             Thetas_seq = self._solve_window(Xw)
             self._prev_thetas_seq = Thetas_seq
             self.latest_thetas_per_mode_.append([Thetas_seq[-1][m].copy()
-                                                 for m in range(len(X_seq.shape) - 1)])
+                                                 for m in range(len(self.dims))])
             self.first_thetas_per_mode_.append([Thetas_seq[0][m].copy()
-                                                 for m in range(len(X_seq.shape) - 1)])
+                                                 for m in range(len(self.dims))])
             
             self.history_.append([[Th.copy() for Th in Thetas_seq_t] for Thetas_seq_t in Thetas_seq])
 

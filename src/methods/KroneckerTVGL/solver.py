@@ -180,6 +180,7 @@ def init_precision(emp_cov, mode='empirical'):
 
 def time_varying_graphical_lasso(
     emp_cov: np.ndarray, # shape: (n_time, n_features, n_features) = (T, dm, dm)
+    n_samples: np.ndarray = None, # shape: (n_time,) = (T,)
     prev_matrices: np.ndarray = None, # shape: (n_time, n_features, n_features) = (T, dm, dm)
     prev_dual_vars: np.ndarray = None, # shape: (n_time, n_features, n_features) = (T, dm, dm)
     alpha=0.01,            
@@ -281,7 +282,14 @@ def time_varying_graphical_lasso(
     divisor[0] -= 1
     divisor[-1] -= 1
 
-    n_samples = np.ones(emp_cov.shape[0]) # window size
+    if n_samples is None:
+        n_samples = np.ones(emp_cov.shape[0], dtype=float)
+    else:
+        n_samples = np.asarray(n_samples, dtype=float).reshape(-1)
+        if n_samples.shape[0] != emp_cov.shape[0]:
+            raise ValueError("n_samples length must match emp_cov.shape[0].")
+        if np.any(n_samples <= 0):
+            raise ValueError("n_samples must be positive.")
 
     checks = [
         convergence(

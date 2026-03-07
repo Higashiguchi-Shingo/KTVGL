@@ -36,6 +36,8 @@ def parse_args():
     parser.add_argument('--seeds-json', type=json.loads, default=None, help="ex) '[[1,12,43],[44,25]]' or None")
     parser.add_argument('--p-edge', type=float, default=0.25, help='parameter of make_sparse_spd')
     parser.add_argument('--wrange', type=float, nargs=2, default=(-3.0, 3.0), help='parameter of make_sparse_spd')
+    parser.add_argument('--samples-per-t', type=int, default=1, help='number of samples per timestep (fixed)')
+    parser.add_argument('--samples-per-t-json', type=json.loads, default=None, help="ex) '[2,1,3,2,...]' (variable per timestep)")
     args = parser.parse_args()
 
     # breaks and seeds processing
@@ -80,9 +82,21 @@ def parse_args():
         if br[0] != 0 or any(br[i] >= br[i+1] for i in range(len(br)-1)) or br[-1] != T:
             raise ValueError(f"breaks_list[{m}] must be in ascending order [0, ..., T] and end with T.")
 
+    if args.samples_per_t_json is None:
+        if args.samples_per_t < 1:
+            raise ValueError("--samples-per-t must be >= 1.")
+        samples_per_t = int(args.samples_per_t)
+    else:
+        if (not isinstance(args.samples_per_t_json, list)) or len(args.samples_per_t_json) != T:
+            raise ValueError("--samples-per-t-json must be a list with length T.")
+        if any(int(v) < 1 for v in args.samples_per_t_json):
+            raise ValueError("All values in --samples-per-t-json must be >= 1.")
+        samples_per_t = [int(v) for v in args.samples_per_t_json]
+
     args.breaks_list = breaks_list
     args.seeds_list = seeds_list
     args.T = T
+    args.samples_per_t = samples_per_t
     return args
 
 
@@ -95,8 +109,14 @@ def main():
         breaks_list=args.breaks_list, 
         T=args.T,
         p_edge=args.p_edge,
-        w_range=tuple(args.wrange)
+        w_range=tuple(args.wrange),
+        samples_per_t=args.samples_per_t
     )
+
+    if isinstance(args.samples_per_t, int):
+        samples_per_t_tag = args.samples_per_t
+    else:
+        samples_per_t_tag = f"var_{min(args.samples_per_t)}to{max(args.samples_per_t)}"
 
     # Settings
     hp = {
@@ -114,7 +134,9 @@ def main():
         'dims': args.dims,
         'breaks_list': args.breaks_list,
         'seeds_list': args.seeds_list,
-        'T': args.T
+        'T': args.T,
+        'samples_per_t': samples_per_t_tag,
+        'samples_per_t_raw': args.samples_per_t
     }
 
     # model
@@ -158,7 +180,7 @@ def main():
         base_dir=args.base_dir, 
         method="KTVGL", 
         dataset="synthetic", 
-        include_keys=["dims", "breaks_list", "seeds_list", "lambdas", "rhos", "init_method", "gauge"],
+        include_keys=["dims", "breaks_list", "seeds_list", "samples_per_t", "lambdas", "rhos", "init_method", "gauge"],
         mkdir=True
     )
     """with open(os.path.join(save_path, 'ktvgl_acc.json'), 'w') as f:
