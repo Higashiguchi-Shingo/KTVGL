@@ -7,7 +7,7 @@ import json, pickle
 import time
 
 sys.path.append(os.path.abspath('../src'))
-from ktvgl.methods.kronecker_tvgl import KroneckerTVGL, time_varying_graphical_lasso
+from ktvgl.methods.kronecker_tvgl import KroneckerTVGL, tvgl_solver
 from ktvgl.common.utils import load_tensor, kronecker_multiple, hp_to_dirpath
 from ktvgl.common.synthetic import generate_kron_data
 from ktvgl.common.metric import ktvgl_eval, tvgl_eval
@@ -143,7 +143,7 @@ def main():
     ktvgl = KroneckerTVGL(
         lambdas=hp['lambdas'], 
         rhos=hp['rhos'], 
-        tvgl_solver=time_varying_graphical_lasso,
+        tvgl_solver=tvgl_solver,
         init_method=hp['init_method'],
         max_iter=hp['max_iter'], 
         max_iter_tvgl=hp['max_iter_tvgl'],

@@ -31,14 +31,14 @@ poetry add "git+https://github.com/Higashiguchi-Shingo/KTVGL.git#multi-samples"
 Then import:
 
 ```python
-from ktvgl.methods.kronecker_tvgl import KroneckerTVGL, time_varying_graphical_lasso
+from ktvgl.methods.kronecker_tvgl import KroneckerTVGL, tvgl_solver
 from ktvgl.common.synthetic import generate_kron_data
 ```
 
 ## Quick Start
 
 ```python
-from ktvgl.methods.kronecker_tvgl import KroneckerTVGL, time_varying_graphical_lasso
+from ktvgl.methods.kronecker_tvgl import KroneckerTVGL, tvgl_solver
 from ktvgl.common.synthetic import generate_kron_data
 
 X_seq, thetas_true = generate_kron_data(
@@ -51,7 +51,7 @@ X_seq, thetas_true = generate_kron_data(
 model = KroneckerTVGL(
     lambdas=[0.01, 0.01],
     rhos=[2.0, 2.0],
-    tvgl_solver=time_varying_graphical_lasso,
+    tvgl_solver=tvgl_solver,
     init_method="empirical",
 )
 
