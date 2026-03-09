@@ -4,6 +4,17 @@ Kronecker Time-Varying Graphical Lasso (KTVGL) implementation.
 
 Paper: [Interpretable Dynamic Network Modeling of Tensor Time Series via Kronecker Time-Varying Graphical Lasso](https://arxiv.org/abs/2602.08197)
 
+## Branch Policy
+
+This `multi-samples` branch is maintained as a package-oriented implementation
+for external use.
+
+If you are looking for the paper reproduction code and original experiment setup,
+please use the `main` branch.
+
+- `multi-samples`: package usage, API-focused structure, multi-sample support per timestamp
+- `main`: paper reproduction scripts and experiment-oriented layout
+
 ## Package Layout
 
 Core library code is under:
@@ -23,6 +34,8 @@ poetry install
 ```
 
 ### Use from another project (GitHub)
+
+To install this branch explicitly:
 
 ```bash
 poetry add "git+https://github.com/Higashiguchi-Shingo/KTVGL.git#multi-samples"
