@@ -15,6 +15,25 @@ from ktvgl.common.metric import ktvgl_eval, tvgl_eval
 from ktvgl.common.viz import viz_change_of_theta, viz_change_of_theta_flatten, viz_error_of_theta, viz_error_of_theta_flatten
 
 
+def _flatten_static_samples(X, n_modes):
+    if isinstance(X, np.ndarray):
+        if X.ndim == n_modes:
+            return X[np.newaxis, ...]
+        if X.ndim == n_modes + 1:
+            return X
+        if X.ndim == n_modes + 2:
+            return X.reshape(-1, *X.shape[-n_modes:])
+        raise ValueError("Unsupported ndarray shape for static KGL input.")
+
+    if isinstance(X, list):
+        if len(X) == 0:
+            raise ValueError("X must contain at least one timestep.")
+        batches = [np.asarray(X_t) for X_t in X]
+        return np.concatenate(batches, axis=0)
+
+    raise TypeError("Unsupported X type.")
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     # I/O settings
@@ -35,6 +54,8 @@ def parse_args():
     parser.add_argument('--seeds-json', type=json.loads, default=None, help="ex) '[[1,12,43],[44,25]]' or None")
     parser.add_argument('--p-edge', type=float, default=0.25, help='parameter of make_sparse_spd')
     parser.add_argument('--wrange', type=float, nargs=2, default=(-3.0, 3.0), help='parameter of make_sparse_spd')
+    parser.add_argument('--samples-per-t', type=int, default=1, help='number of samples per timestep')
+    parser.add_argument('--samples-per-t-json', type=json.loads, default=None, help="ex) '[5,5,3,...]'")
     args = parser.parse_args()
 
     # breaks and seeds processing
@@ -82,6 +103,17 @@ def parse_args():
     args.breaks_list = breaks_list
     args.seeds_list = seeds_list
     args.T = T
+    if args.samples_per_t_json is None:
+        if args.samples_per_t < 1:
+            raise ValueError("--samples-per-t must be >= 1.")
+        samples_per_t = int(args.samples_per_t)
+    else:
+        if (not isinstance(args.samples_per_t_json, list)) or len(args.samples_per_t_json) != T:
+            raise ValueError("--samples-per-t-json must be a list of length T.")
+        if any(int(v) < 1 for v in args.samples_per_t_json):
+            raise ValueError("All values in --samples-per-t-json must be >= 1.")
+        samples_per_t = [int(v) for v in args.samples_per_t_json]
+    args.samples_per_t = samples_per_t
     return args
 
 
@@ -94,8 +126,15 @@ def main():
         breaks_list=args.breaks_list, 
         T=args.T,
         p_edge=args.p_edge,
-        w_range=tuple(args.wrange)
+        w_range=tuple(args.wrange),
+        samples_per_t=args.samples_per_t,
     )
+    X_static = _flatten_static_samples(X, n_modes=len(args.dims))
+
+    if isinstance(args.samples_per_t, int):
+        samples_per_t_tag = args.samples_per_t
+    else:
+        samples_per_t_tag = f"var_{min(args.samples_per_t)}to{max(args.samples_per_t)}"
 
     # Settings
     hp = {
@@ -111,7 +150,9 @@ def main():
         'dims': args.dims,
         'breaks_list': args.breaks_list,
         'seeds_list': args.seeds_list,
-        'T': args.T
+        'T': args.T,
+        'samples_per_t': samples_per_t_tag,
+        'samples_per_t_raw': args.samples_per_t,
     }
 
     # model
@@ -128,7 +169,7 @@ def main():
 
     # Training
     start_time = time.time()
-    Thetas = kgl.fit(X)
+    Thetas = kgl.fit(X_static)
     run_time = time.time() - start_time
     print(f"Training time: {run_time:.2f} seconds")
     Thetas_hat = [[theta_m.copy() for theta_m in Thetas] for _ in range(hp['T'])]
@@ -154,7 +195,7 @@ def main():
         base_dir=args.base_dir, 
         method="KGL", 
         dataset="synthetic", 
-        include_keys=["dims", "breaks_list", "seeds_list", "lambdas", "gauge"],
+        include_keys=["dims", "breaks_list", "seeds_list", "samples_per_t", "lambdas", "gauge"],
         mkdir=True
     )
     with open(os.path.join(save_path, 'kgl_acc.json'), 'w') as f:

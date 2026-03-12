@@ -109,3 +109,53 @@ poetry run python exp/train_ktvgl.py \
 
 - `init_method="Glasso"` is currently disabled.
 - Real-world datasets used in experiments are in `data/`.
+
+## Additional Models
+
+This package also includes implementations of static `KroneckerGL` and vector-valued `TVGL`.
+
+### KroneckerGL
+
+`KroneckerGL` estimates a static Kronecker-structured graph, so its model input does not use a time axis.
+
+Supported input formats:
+
+- single tensor sample: `ndarray`, shape `(d1, ..., dM)`
+- multiple tensor samples: `ndarray`, shape `(N, d1, ..., dM)`
+- multiple tensor samples: `list` of `ndarray`, each with shape `(d1, ..., dM)`
+
+Example:
+
+```python
+from ktvgl import KroneckerGL
+from sklearn.covariance import graphical_lasso
+
+model = KroneckerGL(
+    lambdas=[0.01, 0.01],
+    gl_solver=graphical_lasso,
+    init_method="empirical",
+)
+
+thetas_hat = model.fit(X)
+```
+
+`exp/train_kgl.py` can still use synthetic data generated over timesteps, but in that script the generated samples are aggregated into a static sample set before fitting `KroneckerGL`. In that context, `--samples-per-t` only controls how many synthetic observations are generated per timestamp.
+
+### TVGL
+
+`TVGL` is also included for vector-valued time-varying graphical lasso.
+
+Example:
+
+```python
+from ktvgl import TVGL, time_varying_graphical_lasso
+
+model = TVGL(
+    alpha=0.01,
+    beta=2.0,
+    psi="laplacian",
+    optimizer=time_varying_graphical_lasso,
+)
+
+theta_seq = model.fit(X)
+```

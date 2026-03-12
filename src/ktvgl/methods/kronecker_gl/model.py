@@ -2,6 +2,33 @@ from copy import deepcopy
 import numpy as np
 from numpy.linalg import slogdet
 
+
+def _normalize_static_samples(X, n_modes: int) -> np.ndarray:
+    """Normalize static tensor samples to shape (N, d1, ..., dM)."""
+    if isinstance(X, np.ndarray):
+        if X.ndim == n_modes:
+            return X[np.newaxis, ...]
+        if X.ndim == n_modes + 1:
+            return X
+        raise ValueError(
+            f"Expected ndarray with {n_modes} or {n_modes + 1} dims, got {X.ndim}."
+        )
+
+    if isinstance(X, (list, tuple)):
+        if len(X) == 0:
+            raise ValueError("X must contain at least one sample.")
+        samples = [np.asarray(sample) for sample in X]
+        first_shape = samples[0].shape
+        if len(first_shape) != n_modes:
+            raise ValueError(
+                f"Each sample must have {n_modes} tensor dims, got {len(first_shape)}."
+            )
+        if any(sample.shape != first_shape for sample in samples):
+            raise ValueError("All samples must have the same shape.")
+        return np.stack(samples, axis=0)
+
+    raise TypeError("X must be an ndarray or a list/tuple of ndarrays.")
+
 def compute_mean(arrays):
     total = sum(a.sum() for a in arrays)
     count = sum(a.size for a in arrays)
@@ -42,10 +69,11 @@ def _shrink_offdiag_preserve_diag(S, factor=0.95):
     return sym(S2)
 
 def init_precision(
-    X_seq,
+    X,
     factor=0.95,
     ridge_rel=1e-6,
-    method="empirical"
+    method="empirical",
+    n_modes=None,
 ):
     """
     Parameters
@@ -61,8 +89,10 @@ def init_precision(
     thetas : list of ndarray
     (optional) S_list, S_shr_list : list of ndarray
     """
-    X = np.asarray(X_seq)
-    T = X.shape[0]
+    if n_modes is None:
+        raise ValueError("n_modes must be provided.")
+    X = _normalize_static_samples(X, n_modes=n_modes)
+    N = X.shape[0]
     dims = X.shape[1:]
     M = len(dims)
     P = int(np.prod(dims))
@@ -73,10 +103,10 @@ def init_precision(
             D_minus = P // d_m
 
             S_m = np.zeros((d_m, d_m), dtype=float)
-            for t in range(T):
-                Xt = X[t]
-                Xmt = np.moveaxis(Xt, m, 0).reshape(d_m, D_minus)
-                S_m += (Xmt @ Xmt.T) / (D_minus * T)
+            for n in range(N):
+                Xn = X[n]
+                Xmn = np.moveaxis(Xn, m, 0).reshape(d_m, D_minus)
+                S_m += (Xmn @ Xmn.T) / (D_minus * N)
             S_m = sym(S_m)
 
             S_shr = _shrink_offdiag_preserve_diag(S_m, factor=factor)
@@ -101,20 +131,21 @@ def init_precision(
 
 
 def compute_Shat(
-    X_seq: np.ndarray,
+    X: np.ndarray,
     Thetas: list[np.ndarray],
     mode: int,
     jitter_scale: float = 1e-8
 ) -> np.ndarray:
     """
-    X_seq: array (T, d1, ..., dM)
-    Thetas_seq: list: (M, dm, dm), Thetas_seq[t] is list [Θ_t^(1),...,Θ_t^(M)]
+    X: array (N, d1, ..., dM) or (d1, ..., dM)
+    Thetas: list: (M, dm, dm)
     mode: target mode
 
-    Return: S_hats (T, d_mode, d_mode), S_t^(m) for each timestep
+    Return: Shat (d_mode, d_mode)
     """
-    T = X_seq.shape[0]
-    dims = X_seq.shape[1:]  # (d1,...,dM)
+    X_samples = _normalize_static_samples(X, n_modes=len(Thetas))
+    N = X_samples.shape[0]
+    dims = X_samples.shape[1:]  # (d1,...,dM)
     M = len(dims)
     assert 0 <= mode < M, "mode index out of range"
     d_m = dims[mode]
@@ -122,18 +153,18 @@ def compute_Shat(
 
     Shat = np.zeros((d_m, d_m), dtype=float)
 
-    for t in range(T):
-        X_t = X_seq[t]
+    for n in range(N):
+        X_n = X_samples[n]
 
-        Y = X_t
+        Y = X_n
         for ell in range(M):
             if ell == mode:
                 continue
             Y = mode_product(Y, Thetas[ell], mode=ell)
 
         Ym = np.moveaxis(Y, mode, 0).reshape(d_m, D_minus)
-        Xm = np.moveaxis(X_t, mode, 0).reshape(d_m, D_minus)
-        Shat += (Ym @ Xm.T) / (D_minus * T)
+        Xm = np.moveaxis(X_n, mode, 0).reshape(d_m, D_minus)
+        Shat += (Ym @ Xm.T) / (D_minus * N)
 
     Shat = sym(Shat)
     eps = jitter_scale * max(1.0, np.trace(Shat) / max(d_m, 1))
@@ -212,7 +243,7 @@ def scale_correct(
 
 
 def update_one_mode_glasso(
-    X_seq: np.ndarray,          # shape: (T, d1, ..., dM)
+    X: np.ndarray,              # shape: (N, d1, ..., dM)
     Thetas: list[np.ndarray],   # list of array: (dm, dm), length = M
     mode: int,              
     gl_solver,                # gl_solver(S_hats, lam_bar, **kwargs) -> np.ndarray (d_m, d_m)
@@ -231,15 +262,15 @@ def update_one_mode_glasso(
     Returns: 
     Thetas_seq: updated precision matrices
     """
-    T = X_seq.shape[0]
-    dims = X_seq.shape[1:]
+    X_samples = _normalize_static_samples(X, n_modes=len(Thetas))
+    dims = X_samples.shape[1:]
     M = len(dims)
     d_m = dims[mode]
     D_minus = int(np.prod([dims[k] for k in range(M) if k != mode]))
 
     # (a) Compute S^(m)
     S_hat = compute_Shat_func(
-        X_seq=X_seq, 
+        X=X_samples,
         Thetas=Thetas, 
         mode=mode
     )   # S_hats: shape (d_m, d_m)
@@ -272,8 +303,8 @@ def update_one_mode_glasso(
 
 # kronecker TVGL
 def kronecker_graphical_lasso(
-    X_seq: np.ndarray,                   # shape: (T, d1, ..., dn)
-    Thetas: list[list[np.ndarray]],      # list: (M, dm, dm), array: (dm, dm)
+    X: np.ndarray,                       # shape: (N, d1, ..., dn)
+    Thetas: list[np.ndarray],            # list: (M, dm, dm)
     lambdas: list[float],                # list: (M, )
     gl_solver,                           # gl_solver(S_hats, lam_bar, **kwargs) -> np.ndarray (T, d_m, d_m)
     compute_Shat_func,                   # compute_Shat(X_seq, Thetas_seq, mode) -> (T, d_m, d_m)
@@ -285,15 +316,16 @@ def kronecker_graphical_lasso(
     tol_flipflop: float = 1e-4,
     verbose: bool = False
 ):
+    X_samples = _normalize_static_samples(X, n_modes=len(Thetas))
     pre_obj = None
-    M = len(X_seq.shape[1:])
+    M = len(X_samples.shape[1:])
 
     for iter in range(max_iter):
         if verbose: print("Iteration:", str(iter))
         for mode in range(M):
             if verbose: print("mode:", str(mode))
             Thetas = update_one_mode_glasso(
-                X_seq=X_seq,
+                X=X_samples,
                 Thetas=Thetas,
                 mode=mode,
                 lambda_m=lambdas[mode],
@@ -305,7 +337,7 @@ def kronecker_graphical_lasso(
                 anchor=anchor,
                 verbose=verbose
             )
-        obj = objective_function(X_seq, Thetas, lambdas)
+        obj = objective_function(X_samples, Thetas, lambdas)
         if verbose: print("Score:", str(obj))
 
         if pre_obj is not None and ((pre_obj - obj) / np.abs(pre_obj)) < tol_flipflop:
@@ -343,15 +375,19 @@ class KroneckerGL:
         self.verbose = verbose
 
     def fit(self, X_seq):
-        self.X_seq = X_seq
-        self.dims = X_seq.shape[1:]
+        self.X_seq = _normalize_static_samples(X_seq, n_modes=len(self.lambdas))
+        self.dims = self.X_seq.shape[1:]
 
         # Initialize Thetas_seq
-        Thetas = init_precision(X_seq, method=self.init_method)
+        Thetas = init_precision(
+            self.X_seq,
+            method=self.init_method,
+            n_modes=len(self.lambdas),
+        )
 
         # Run Kronecker graphical lasso
         self.Thetas_seq = kronecker_graphical_lasso(
-            X_seq=X_seq,
+            X=self.X_seq,
             Thetas=Thetas,
             lambdas=self.lambdas,
             gl_solver=self.gl_solver,
@@ -367,16 +403,33 @@ class KroneckerGL:
 
         return self.Thetas_seq
 
+    @staticmethod
+    def compute_covariances_from_thetas(Thetas: list[np.ndarray]) -> list[np.ndarray]:
+        return [sym(np.linalg.pinv(theta, hermitian=True)) for theta in Thetas]
 
-def objective_function(X_seq, Thetas, lambdas, mode=0):
-    T = X_seq.shape[0]
-    dims = X_seq.shape[1:]  # (d1,...,dM)
+    @staticmethod
+    def compute_partial_correlations_from_thetas(
+        Thetas: list[np.ndarray], eps: float = 1e-12
+    ) -> list[np.ndarray]:
+        partials = []
+        for theta in Thetas:
+            diag = np.clip(np.diag(theta), eps, None)
+            scale = np.sqrt(np.outer(diag, diag))
+            partial = -theta / scale
+            np.fill_diagonal(partial, 1.0)
+            partials.append(sym(partial))
+        return partials
+
+
+def objective_function(X, Thetas, lambdas, mode=0):
+    X_samples = _normalize_static_samples(X, n_modes=len(Thetas))
+    dims = X_samples.shape[1:]  # (d1,...,dM)
     M = len(dims)
     assert 0 <= mode < M, "mode index out of range"
 
     # Compute the objective function value
     obj = 0.0
-    S_hat = compute_Shat(X_seq, Thetas, mode)
+    S_hat = compute_Shat(X_samples, Thetas, mode)
 
     # log-likelihood terms
     D_minus = int(np.prod([dims[k] for k in range(M) if k != mode]))
