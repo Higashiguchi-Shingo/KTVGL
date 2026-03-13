@@ -62,8 +62,8 @@ for seeds in "${seeds_list[@]}"; do
       --seeds-json "$seeds" \
       --T 300 \
       --base-dir "../syn_l1" \
-      --lambda 0.03 0.03 \
-      --rho 2.0 2.0 \
+      --lambda 0.05 0.05 \
+      --rho 1.0 1.0 \
       --gauge "trace" \
       --psi l1 \
       --init "empirical" \

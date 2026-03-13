@@ -418,7 +418,8 @@ def kronecker_timevarying_graphical_lasso(
     verbose: bool = False,
     psi: str = "laplacian", # "laplacian" or "l1"
     init_thetas: list[np.ndarray] = None,
-    early_stopping: bool = True
+    early_stopping: bool = True,
+    objective_history: Optional[list[dict[str, float]]] = None
 ):
     X_seq = _normalize_X_seq(X_seq, n_modes=len(Thetas_seq[0]))
     pre_obj = None
@@ -444,9 +445,17 @@ def kronecker_timevarying_graphical_lasso(
                 psi=psi,
                 init_thetas=init_thetas[mode] if init_thetas is not None else None
             )
-        obj = objective_function(X_seq, Thetas_seq, lambdas, rhos)
-
-        print("Score:", str(obj))
+        terms = objective_terms(X_seq, Thetas_seq, lambdas, rhos)
+        obj = terms["total"]
+        if objective_history is not None:
+            objective_history.append(terms)
+        print(
+            "Objective total:"
+            f" {obj:.6e}"
+            f" | data_fit: {terms['data_fit']:.6e}"
+            f" | sparsity: {terms['sparsity']:.6e}"
+            f" | temporal: {terms['temporal']:.6e}"
+        )
 
         if pre_obj is not None:
             if ((pre_obj - obj) / np.abs(pre_obj)) < tol_flipflop:
@@ -490,10 +499,12 @@ class KroneckerTVGL:
         self.verbose = verbose
         self.psi = psi
         self.early_stopping = early_stopping
+        self.objective_history_: list[dict[str, float]] = []
 
     def fit(self, X_seq):
         self.X_seq = _normalize_X_seq(X_seq, n_modes=len(self.lambdas))
         self.dims = _infer_dims(self.X_seq, len(self.lambdas))
+        self.objective_history_ = []
 
         # Initialize Thetas_seq by identity matrices
         Thetas_seq = init_precision(self.X_seq, method=self.init_method, lambdas=self.lambdas, n_modes=len(self.lambdas))
@@ -515,7 +526,8 @@ class KroneckerTVGL:
             tol_flipflop=self.tol_flipflop,
             verbose=self.verbose,
             psi=self.psi,
-            early_stopping=self.early_stopping
+            early_stopping=self.early_stopping,
+            objective_history=self.objective_history_
         )
         self.Thetas_seq = _out
 
@@ -568,34 +580,46 @@ class KroneckerTVGL:
 
 
 def objective_function(X_seq, Thetas_seq, lambdas, rhos, mode=0):
+    return objective_terms(X_seq, Thetas_seq, lambdas, rhos, mode=mode)["total"]
+
+
+def objective_terms(X_seq, Thetas_seq, lambdas, rhos, mode=0):
     T = len(Thetas_seq)
     M = len(Thetas_seq[0])
     X_norm = _normalize_X_seq(X_seq, n_modes=M)
     dims = _infer_dims(X_norm, M)  # (d1,...,dM)
     assert 0 <= mode < M, "mode index out of range"
 
-    # Compute the objective function value
-    obj = 0.0
+    data_fit = 0.0
+    sparsity = 0.0
+    temporal = 0.0
     S_hat = compute_Shat_multi_sample(X_norm, Thetas_seq, mode)
 
-    # log-likelihood terms
+    # data-fit and log-determinant terms
     for t in range(T):
         D_minus = int(np.prod([dims[k] for k in range(M) if k != mode]))
-        obj += D_minus * np.trace(S_hat[t] @ Thetas_seq[t][mode])
+        data_fit += D_minus * np.trace(S_hat[t] @ Thetas_seq[t][mode])
         for m in range(M):
             D_minus = int(np.prod([dims[k] for k in range(M) if k != m]))
-            obj -= D_minus * logdet(Thetas_seq[t][m])
+            data_fit -= D_minus * logdet(Thetas_seq[t][m])
 
     # L1 norm terms
     for t in range(T):
         for m in range(M):
-            obj += lambdas[m] * l1_od_norm(Thetas_seq[t][m])
+            sparsity += lambdas[m] * l1_od_norm(Thetas_seq[t][m])
 
     # TV regularization terms
     for t in range(1,T):
         for m in range(M):
-            obj += rhos[m] * squared_norm(Thetas_seq[t][m] - Thetas_seq[t-1][m])
-    return obj
+            temporal += rhos[m] * squared_norm(Thetas_seq[t][m] - Thetas_seq[t-1][m])
+
+    total = data_fit + sparsity + temporal
+    return {
+        "data_fit": float(data_fit),
+        "sparsity": float(sparsity),
+        "temporal": float(temporal),
+        "total": float(total),
+    }
 
 def squared_norm(x):
     """Squared Euclidean or Frobenius norm of x.

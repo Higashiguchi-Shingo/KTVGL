@@ -26,7 +26,7 @@ def parse_args():
     parser.add_argument('--tol_flipflop', type=float, default=1e-4, help='tolerance for convergence')
     parser.add_argument('--psi', type=str, default="laplacian", choices=["laplacian", "l1"], help='temporal penalty type')
     parser.add_argument('--verbose', action='store_true', help='whether to print progress')
-    parser.add_argument('--gauge', type=str, default='trace', choices=['trace', 'det', 'fro'], help='gauge normalization method')
+    parser.add_argument('--gauge', type=str, default='trace', choices=['trace', 'det', 'fro', 'none'], help="gauge normalization method ('none' disables gauge normalization)")
     parser.add_argument('--window-size', type=int, default=50, help='sliding window size')
     parser.add_argument('--step-size', type=int, default=1, help='stride for sliding window')
     parser.add_argument("--log", type=str, default="latest", choices=["latest", "first"])
@@ -85,6 +85,8 @@ def parse_args():
     args.breaks_list = breaks_list
     args.seeds_list = seeds_list
     args.T = T
+    if args.gauge == "none":
+        args.gauge = None
     return args
 
 

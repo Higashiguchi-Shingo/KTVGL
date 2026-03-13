@@ -27,7 +27,7 @@ def parse_args():
     parser.add_argument('--tol_flipflop', type=float, default=1e-4, help='tolerance for convergence')
     parser.add_argument('--psi', type=str, default="laplacian", choices=["laplacian", "l1"], help='temporal penalty type')
     parser.add_argument('--verbose', action='store_true', help='whether to print progress')
-    parser.add_argument('--gauge', type=str, default='trace', choices=['trace', 'det', 'fro'], help='gauge normalization method')
+    parser.add_argument('--gauge', type=str, default='trace', choices=['trace', 'det', 'fro', 'none'], help="gauge normalization method ('none' disables gauge normalization)")
     # data setting
     parser.add_argument('--dims', type=int, nargs='+', required=True, help='dimensions of each mode. e.g. --dims 20 30 40')
     parser.add_argument('--T', type=int, default=None, help='total time steps. If omitted, all modes must have the same breaks[-1]')
@@ -96,6 +96,8 @@ def parse_args():
     args.breaks_list = breaks_list
     args.seeds_list = seeds_list
     args.T = T
+    if args.gauge == "none":
+        args.gauge = None
     args.samples_per_t = samples_per_t
     return args
 
