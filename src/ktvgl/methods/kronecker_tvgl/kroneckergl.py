@@ -584,6 +584,7 @@ def objective_function(X_seq, Thetas_seq, lambdas, rhos, mode=0):
 
 
 def objective_terms(X_seq, Thetas_seq, lambdas, rhos, mode=0):
+    """Evaluate sample-summed data fit and the unweighted penalties."""
     T = len(Thetas_seq)
     M = len(Thetas_seq[0])
     X_norm = _normalize_X_seq(X_seq, n_modes=M)
@@ -594,14 +595,15 @@ def objective_terms(X_seq, Thetas_seq, lambdas, rhos, mode=0):
     sparsity = 0.0
     temporal = 0.0
     S_hat = compute_Shat_multi_sample(X_norm, Thetas_seq, mode)
+    n_samples = _time_sample_counts(X_norm, M)
 
-    # data-fit and log-determinant terms
+    # S_hat is sample-averaged; weight both likelihood terms as in the solver.
     for t in range(T):
         D_minus = int(np.prod([dims[k] for k in range(M) if k != mode]))
-        data_fit += D_minus * np.trace(S_hat[t] @ Thetas_seq[t][mode])
+        data_fit += n_samples[t] * D_minus * np.trace(S_hat[t] @ Thetas_seq[t][mode])
         for m in range(M):
             D_minus = int(np.prod([dims[k] for k in range(M) if k != m]))
-            data_fit -= D_minus * logdet(Thetas_seq[t][m])
+            data_fit -= n_samples[t] * D_minus * logdet(Thetas_seq[t][m])
 
     # L1 norm terms
     for t in range(T):

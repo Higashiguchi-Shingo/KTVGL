@@ -84,6 +84,11 @@ thetas_hat = model.fit(X_seq)
 
 `mode` always refers to tensor modes `(d1, ..., dM)`, not the sample axis.
 
+KTVGL sums its negative log-likelihood over samples and timesteps. The reported
+`data_fit`, objective history, and outer-loop early stopping use this same sample
+weighting, including for streaming windows. Covariance estimates remain sample
+averages; sparsity and temporal penalties are not multiplied by sample counts.
+
 ## Synthetic Data
 
 Synthetic data generation is provided by `ktvgl.common.synthetic.generate_kron_data`.
