@@ -104,7 +104,7 @@ def compute_Shat(
     return S_hats
 
 
-def compute_scale_factor(Theta: np.ndarray, gauge: str) -> float:
+def compute_scale_factor(Theta: np.ndarray, gauge: Optional[str]) -> float:
     """
     Returns: scaled coef, g(Theta)
     """
@@ -119,14 +119,14 @@ def compute_scale_factor(Theta: np.ndarray, gauge: str) -> float:
     elif gauge is None:
         return 1.0
     else:
-        raise ValueError("gauge must be 'trace', 'fro', or 'det'.")
+        raise ValueError("gauge must be None, 'trace', 'fro', or 'det'.")
 
 
 def scale_correct(
     Thetas_t: list[np.ndarray],  # list of ndarray, [Θ_t^(1), ..., Θ_t^(M)], shape of Θ_t^(m): (dm, dm)
     mode: int,
     *,
-    gauge: str = "trace",        # 'trace' | 'fro' | 'det'
+    gauge: Optional[str] = None,        # None | 'trace' | 'fro' | 'det'
     strategy: str = "anchor",    # 'anchor' | 'equal' | 'none'
     anchor: int | str = "next"   # 'next' | 'prev' | int (モード番号)
 ) -> list[np.ndarray]:
@@ -176,7 +176,7 @@ def scale_correct_seq(
     Thetas_seq: list[list[np.ndarray]], # shape: (T, M, dm, dm)
     mode: int,
     *,
-    gauge: str = "trace",
+    gauge: Optional[str] = None,
     strategy: str = "anchor",
     anchor: int | str = "next"
 ) -> list[list[np.ndarray]]:
@@ -211,7 +211,7 @@ def update_one_mode_tvgl(
     lambda_m: float = 0.01,   # float: strength of L1 norm for mode m
     rho_m: float = 1.0,       # float: strength of L2 norm for mode m
     max_iter_tvgl: int = 500,  # number of iteration for TVGL
-    gauge="trace",
+    gauge=None,
     strategy="anchor",
     anchor="next",
     verbose=False,
@@ -296,7 +296,7 @@ def kronecker_timevarying_graphical_lasso(
     rhos: list[float],                     # list: (M, )
     tvgl_solver,                           # tvgl_solver(S_hats, lam_bar, **kwargs) -> np.ndarray (T, d_m, d_m)
     compute_Shat_func,                     # compute_Shat(X_seq, Thetas_seq, mode) -> (T, d_m, d_m)
-    gauge: str = "trace",
+    gauge: Optional[str] = None,
     strategy: str = "anchor",
     anchor: str = "next",
     max_iter: int = 10,
@@ -387,7 +387,7 @@ class KroneckerTVGL:
                  rhos, 
                  tvgl_solver, 
                  init_method="empirical",
-                 gauge="trace", 
+                 gauge=None,
                  strategy="equal", 
                  anchor="next", 
                  max_iter=10,
@@ -574,7 +574,7 @@ def l1_od_norm(precision):
 def scale_correct_with_gamma(
     Thetas_t: list[np.ndarray],  # list of ndarray, [Θ_t^(1), ..., Θ_t^(M)], shape of Θ_t^(m): (dm, dm)
     mode: int,
-    gauge: str = "trace",        # 'trace' | 'fro' | 'det'
+    gauge: Optional[str] = None,        # None | 'trace' | 'fro' | 'det'
 ) -> list[np.ndarray]:
     M = len(Thetas_t)  # number of modes
     assert 0 <= mode < M
@@ -594,7 +594,7 @@ def scale_correct_with_gamma(
 def scale_correct_seq_with_gamma(
     Thetas_seq: list[list[np.ndarray]], # shape: (T, M, dm, dm)
     mode: int,
-    gauge: str = "trace",
+    gauge: Optional[str] = None,
 ) -> list[list[np.ndarray]]:
     """
     Thetas_seq: list of list, {Thetas_t} (t = 0,1,...,T-1),
@@ -620,7 +620,7 @@ def scale_correct_seq_with_gamma(
 
 def scale_correct_tensor_with_gamma(
     Thetas_seq: list[list[np.ndarray]], # shape: (T, M, dm, dm)
-    gauge: str = "trace",
+    gauge: Optional[str] = None,
 ):
     """
     Thetas_seq: ndarray, shape = (T, M, dm, dm)
@@ -650,7 +650,7 @@ def scale_objective_with_gamma(
     Thetas_seq: list[list[np.ndarray]],
     lambdas: list[float],
     rhos: list[float],
-    gauge: str = "trace",
+    gauge: Optional[str] = None,
     mode: int = 0
 ):
     T = X_seq.shape[0]
@@ -676,7 +676,7 @@ class StreamKroneckerTVGL:
         step_size: int = 1,
         inverse_ridge: float = 1e-6,
         init_method: str = "empirical",
-        gauge: str = "trace",
+        gauge: Optional[str] = None,
         strategy: str = "equal",
         anchor: str = "next",
         max_iter: int = 10,
