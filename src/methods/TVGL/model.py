@@ -129,6 +129,13 @@ def soft_thresholding(a, lamda):
     """Soft-thresholding."""
     return np.sign(a) * np.maximum(np.abs(a) - lamda, 0)
 
+def soft_thresholding_off_diagonal(a, lamda):
+    """Prox for off-diagonal L1 on a matrix or a batch of matrices."""
+    result = soft_thresholding(a, lamda)
+    diagonal = np.arange(a.shape[-1])
+    result[..., diagonal, diagonal] = a[..., diagonal, diagonal]
+    return result
+
 def prox_laplacian(a, lamda):
     """Prox for l_2 square norm, Laplacian regularisation."""
     return a / (1 + 2. * lamda)
@@ -330,7 +337,7 @@ def time_graphical_lasso_laplacian(
         A = K + U_0
         A += A.transpose(0, 2, 1)
         A /= 2.
-        Z_0 = soft_thresholding(A, lamda=alpha / rho)
+        Z_0 = soft_thresholding_off_diagonal(A, lamda=alpha / rho)
 
         # ---------- update Z1 and Z2 ----------
         A_1 = K[:-1] + U_1
@@ -552,7 +559,7 @@ def time_varying_graphical_lasso(
         A = K + U_0
         A += A.transpose(0, 2, 1)
         A /= 2.
-        Z_0 = soft_thresholding(A, lamda=alpha / rho)
+        Z_0 = soft_thresholding_off_diagonal(A, lamda=alpha / rho)
 
         # ---------- update Z1 and Z2 ----------
         A_1 = K[:-1] + U_1
