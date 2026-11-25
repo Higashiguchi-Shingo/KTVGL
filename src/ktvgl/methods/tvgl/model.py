@@ -466,7 +466,10 @@ def time_varying_graphical_lasso(
     stop_when=1e-4,
     init='empirical', 
     init_inv_cov=None, # shape: (n_time, n_features, n_features) = (T, dm, dm)
-    psi="laplacian"
+    psi="laplacian",
+    log_objective: bool = False,
+    log_every: int = 1,
+    log_prefix: str = "TVGL"
 ):
     """
     Time-Varying Graphical Lasso (TVGL) for time-varying covariance estimation.
@@ -516,6 +519,17 @@ def time_varying_graphical_lasso(
     n_iter : int, optional
         Number of iterations. Only returned if return_n_iter is True.
     """
+    def _log_check(iteration, check):
+        if not log_objective:
+            return
+        if iteration % max(log_every, 1) != 0:
+            return
+        print(
+            f"{log_prefix} iter={iteration}: "
+            f"obj={check.obj:.6e}, rnorm={check.rnorm:.6e}, snorm={check.snorm:.6e}, "
+            f"eps_pri={check.e_pri:.6e}, eps_dual={check.e_dual:.6e}"
+        )
+
     psi, prox_psi = check_norm_prox(psi)
 
     # initialize precision matrix
@@ -649,6 +663,7 @@ def time_varying_graphical_lasso(
                 "obj: %.4f, rnorm: %.4f, snorm: %.4f,"
                 "eps_pri: %.4f, eps_dual: %.4f" % check[:5]
             )
+        _log_check(iteration_, check)
 
         checks.append(check)
         if stop_at is not None:
@@ -703,7 +718,10 @@ class TVGL():
         stop_when=1e-4,
         init='empirical_mean', 
         psi="laplacian",
-        init_inv_cov=None
+        init_inv_cov=None,
+        log_objective: bool = False,
+        log_every: int = 1,
+        log_prefix: str = "TVGL"
     ):
         self.alpha = alpha   # L1 penalty for the precision matrix
         self.rho = rho       # Augmented Lagrangian parameter
@@ -718,6 +736,9 @@ class TVGL():
         self.init = init           # Initialization method for the precision matrix
         self.psi = psi             # Regularization function
         self.init_inv_cov = init_inv_cov # Initial inverse covariance matrix
+        self.log_objective = log_objective
+        self.log_every = log_every
+        self.log_prefix = log_prefix
 
     def fit(self, X):
         """
@@ -745,7 +766,10 @@ class TVGL():
             stop_when=self.stop_when,
             init=self.init,
             psi=self.psi,
-            init_inv_cov=self.init_inv_cov
+            init_inv_cov=self.init_inv_cov,
+            log_objective=self.log_objective,
+            log_every=self.log_every,
+            log_prefix=self.log_prefix
         )
         return self.Z_0
 
@@ -789,6 +813,9 @@ class StreamTVGL:
         stop_when=1e-4,
         init='empirical_mean', 
         psi="laplacian",
+        log_objective: bool = False,
+        log_every: int = 1,
+        log_prefix: str = "StreamTVGL",
         **tvgl_kwargs
     ):
         """
@@ -818,6 +845,9 @@ class StreamTVGL:
         self.stop_when = stop_when   # If not None, stop the algorithm when the relative change in the objective function is less than this value
         self.init = init           # Initialization method for the precision matrix
         self.psi = psi             # Regularization function
+        self.log_objective = log_objective
+        self.log_every = log_every
+        self.log_prefix = log_prefix
 
         self._prev_thetas: Optional[np.ndarray] = None
 
@@ -878,7 +908,10 @@ class StreamTVGL:
             stop_when=self.stop_when,
             init=self.init,
             psi=self.psi,
-            init_inv_cov=init_inv_cov
+            init_inv_cov=init_inv_cov,
+            log_objective=self.log_objective,
+            log_every=self.log_every,
+            log_prefix=self.log_prefix
         )
         return Z_0, covariance_, checks, n_iter
 

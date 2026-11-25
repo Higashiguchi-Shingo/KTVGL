@@ -62,15 +62,15 @@ for seeds in "${seeds_list[@]}"; do
       --seeds-json "$seeds" \
       --T 300 \
       --base-dir "../syn_l1" \
-      --lambda 0.05 0.05 \
-      --rho 1.0 1.0 \
-      --gauge "trace" \
-      --psi l1 \
-      --init "empirical" \
+      --lambda 0.01 0.01 \
+      --rho 1.5 1.5 \
+      --psi laplacian \
+      --init "identity" \
       --samples-per-t 5
   done
 done
 
+#--gauge "trace" \
 
 #for seeds in "${seeds_list[@]}"; do
  # for breaks in "${breaks_list[@]}"; do

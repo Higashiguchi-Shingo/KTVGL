@@ -207,3 +207,10 @@ marimo/_lsp/
 __marimo__/
 
 syn_l1/
+
+# macOS
+.DS_Store
+
+# Lecture materials and PDF build files
+/output/pdf/
+/tmp/pdfs/

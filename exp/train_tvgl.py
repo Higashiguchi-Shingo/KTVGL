@@ -25,6 +25,8 @@ def parse_args():
     parser.add_argument('--max_iter', type=int, default=1000, help='maximum number of iterations')
     parser.add_argument('--psi', type=str, default="laplacian", choices=["laplacian", "l1"], help='temporal penalty type')
     parser.add_argument('--verbose', action='store_true', help='whether to print progress')
+    parser.add_argument('--log-objective', action='store_true', help='whether to print per-iteration TVGL objective logs')
+    parser.add_argument('--log-every', type=int, default=1, help='print TVGL objective logs every k iterations')
     # data setting
     parser.add_argument('--dims', type=int, nargs='+', required=True, help='dimensions of each mode. e.g. --dims 20 30 40')
     parser.add_argument('--T', type=int, default=None, help='total time steps. If omitted, all modes must have the same breaks[-1]')
@@ -155,6 +157,8 @@ def main():
         'max_iter': args.max_iter,
         'psi': args.psi,
         'verbose': args.verbose,
+        'log_objective': args.log_objective,
+        'log_every': args.log_every,
         'init_method': args.init,
         'w_range': tuple(args.wrange),
         'p_edge': args.p_edge,
@@ -175,7 +179,9 @@ def main():
         rtol=1e-4, 
         init=hp['init_method'], 
         psi=hp['psi'], 
-        verbose=hp['verbose']
+        verbose=hp['verbose'],
+        log_objective=hp['log_objective'],
+        log_every=hp['log_every']
     )
 
     # Training

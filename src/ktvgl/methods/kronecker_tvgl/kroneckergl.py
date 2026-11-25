@@ -347,7 +347,7 @@ def update_one_mode_tvgl(
         Theta_m_seq = tvgl_solver(
             emp_cov=S_hats, 
             alpha=lam_bar,
-            rho=rho_bar,
+            beta=rho_bar,
             max_iter=max_iter_tvgl,
             n_samples=n_samples,
             prev_matrices=prev_matrices,
@@ -359,7 +359,7 @@ def update_one_mode_tvgl(
         Theta_m_seq = tvgl_solver(
             emp_cov=S_hats, 
             alpha=lam_bar,
-            rho=rho_bar,
+            beta=rho_bar,
             max_iter=max_iter_tvgl,
             prev_matrices=prev_matrices,
             verbose=verbose,

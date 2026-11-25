@@ -25,7 +25,7 @@ for seeds in "${seeds_list[@]}"; do
       --beta 1.0 \
       --base-dir "../syn_l1" \
       --psi l1 \
-      --samples-per-t 10
+      --samples-per-t 10 \
+      --log-objective
   done
 done
-
