@@ -206,7 +206,16 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Generated experiment results (default and existing script output directories)
+runs/
+exp_results/
 syn_l1/
+syn_not_scale/
+grid/
+grid_full/
+
+# KTVGL run directories, including custom --base-dir locations
+**/KTVGL/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T??????.??????Z_????????/
 
 # macOS
 .DS_Store

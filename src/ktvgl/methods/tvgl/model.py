@@ -56,13 +56,6 @@ def squared_norm(x):
                       UserWarning)
     return np.dot(x, x)
 
-def off_diag_frobenius_square(X: np.ndarray) -> float:
-    ret = 0
-    T = X.shape[0]
-    for t in range(T):
-        ret += np.sum(X[t]**2) - np.sum(np.diag(X[t])**2)
-    return ret
-
 def logdet(A):
     """Compute log(det(A)) for A symmetric.
     Equivalent to : np.log(nl.det(A)) but more robust.
@@ -389,6 +382,7 @@ def time_graphical_lasso_laplacian(
         U_2 += K[1:] - Z_2
 
         # diagnostics, reporting, termination checks, for termination
+        # Consensus includes diagonal entries, even with off-diagonal sparsity.
         rnorm = np.sqrt(
             squared_norm(K - Z_0) + squared_norm(K[:-1] - Z_1) +
             squared_norm(K[1:] - Z_2))
@@ -633,12 +627,13 @@ def time_varying_graphical_lasso(
         U_2 += K[1:] - Z_2
 
         # diagnostics, reporting, termination checks, for termination
+        # Consensus includes diagonal entries, even with off-diagonal sparsity.
         rnorm = np.sqrt(
-            off_diag_frobenius_square(K - Z_0) + off_diag_frobenius_square(K[:-1] - Z_1) + off_diag_frobenius_square(K[1:] - Z_2)
+            squared_norm(K - Z_0) + squared_norm(K[:-1] - Z_1) + squared_norm(K[1:] - Z_2)
         )
 
         snorm = rho * np.sqrt(
-            off_diag_frobenius_square(Z_0 - Z_0_old) + off_diag_frobenius_square(Z_1 - Z_1_old) + off_diag_frobenius_square(Z_2 - Z_2_old)
+            squared_norm(Z_0 - Z_0_old) + squared_norm(Z_1 - Z_1_old) + squared_norm(Z_2 - Z_2_old)
         )
 
         obj = objective(
@@ -651,13 +646,13 @@ def time_varying_graphical_lasso(
             snorm=snorm,
             e_pri=np.sqrt(K.size + 2 * Z_1.size) * tol + rtol * max(
                 np.sqrt(
-                    off_diag_frobenius_square(Z_0) + off_diag_frobenius_square(Z_1) + off_diag_frobenius_square(Z_2)),
+                    squared_norm(Z_0) + squared_norm(Z_1) + squared_norm(Z_2)),
                 np.sqrt(
-                    off_diag_frobenius_square(K) + off_diag_frobenius_square(K[:-1]) +
-                    off_diag_frobenius_square(K[1:]))
+                    squared_norm(K) + squared_norm(K[:-1]) +
+                    squared_norm(K[1:]))
                 ),
             e_dual=np.sqrt(K.size + 2 * Z_1.size) * tol + rtol * rho *
-            np.sqrt(off_diag_frobenius_square(U_0) + off_diag_frobenius_square(U_1) + off_diag_frobenius_square(U_2)),
+            np.sqrt(squared_norm(U_0) + squared_norm(U_1) + squared_norm(U_2)),
             # precision=Z_0.copy()
         )
 

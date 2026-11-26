@@ -164,3 +164,262 @@ model = TVGL(
 
 theta_seq = model.fit(X)
 ```
+
+
+## Versioned KTVGL run artifacts (stages 1–3)
+
+`exp/train_ktvgl.py` writes synthetic and external-data runs using the same schema.
+Other training scripts retain their existing output format for now. Calling
+`KroneckerTVGL.fit()` directly does not create files and still returns the precision
+sequence; `model.fit_info_` provides the outer iteration count, final objective,
+and stop reason. `model.inner_history_` holds compact subproblem diagnostics.
+
+Each CLI invocation creates a new directory, even when the dataset and settings
+are identical:
+
+```text
+<base-dir>/<dataset-id>/KTVGL/<UTC-timestamp>_<unique-id>/
+  config.json
+  environment.json
+  summary.json
+  precision.npz
+  history.csv
+  inner_summary.csv
+  run.log
+  figures/             # convergence + time-change plots; errors only with ground truth
+```
+
+This replaces the usual KTVGL script's parameter-directory / pickle output.
+Existing results are not removed. The run directory is printed at startup.
+Stage 2 adds the outer history CSV and convergence plots described below.
+Stage 3 adds compact inner ADMM diagnostics, numerical checks, and `run.log`. Existing `change/`
+and `error/` figures use the **data time axis**; convergence figures use outer
+iterations or outer-loop elapsed seconds.
+
+- `config.json`: schema version, dataset identity/version, coordinates,
+  requested arguments, effective model settings, solver defaults and overrides,
+  resolved synthetic seeds, per-time sample counts, input hash, and evaluation
+  conventions. `gauge: null` means no gauge normalization.
+- `environment.json`: Python/platform/package versions and Git commit/branch/dirty
+  status when available. Uncommitted source contents are not archived; preserve
+  the checkout separately when reproducing a dirty run.
+- `summary.json`: `running`, `completed`, or `failed` status; UTC timestamps;
+  outer `n_iter`, `final_objective`, and `stop_reason`; phase timings; precision
+  array manifest; ground-truth availability; metrics or `null`; failure details.
+  `completed` means the workflow finished, not that every inner ADMM solve converged.
+- `precision.npz`: `estimated_mode_0`, `estimated_mode_1`, ... arrays of shape
+  `(T, d_m, d_m)`. Optional `true_mode_m` arrays use the same layout. Unequal mode
+  sizes are supported; no object arrays or pickle are required.
+
+`stop_reason` is `max_iter`, `objective_tolerance`, or `objective_increase`.
+The existing stopping rule is unchanged; an increase-triggered stop is explicitly
+identified. Missing/non-finite scalar JSON values are represented by `null`.
+Times are seconds measured with a monotonic clock; `total` includes setup and
+artifact creation through the point just before writing the final summary.
+
+### Synthetic example
+
+Run from the repository root:
+
+```bash
+python exp/train_ktvgl.py --dims 3 4 --breaks-json '[[0,3,6],[0,4,6]]' \
+  --seeds-json '[[11,12],[21,22]]' --gaussian-seed 42 \
+  --lambdas .05 .05 --rhos 1.5 1.5 --max_iter 3 \
+  --dataset-id synthetic-example --dataset-name "Synthetic example" --base-dir runs
+```
+
+Unspecified/null graph seeds are resolved to concrete integers before generation
+and recorded in `config.json` under `generation`. That object can be passed back
+to `generate_kron_data(**config["generation"])` to recreate the input. The
+observation seed defaults to 42 and is also recorded.
+
+### External data example
+
+The input must already be a finite, real-valued tensor. The runner does not center,
+standardize, fill missing values, or otherwise preprocess it.
+
+- `.npy`: array with shape `(T, d1, ..., dM)`.
+- `.npz`: the same array under key `X`.
+- On `multi-samples`, either format also supports `(T, N, d1, ..., dM)`.
+  Variable counts use NPZ keys `X_0`, `X_1`, ..., each shaped `(N_t, d1, ..., dM)`.
+- NPZ may include `true_mode_0`, ..., with shape `(T, d_m, d_m)` for every mode.
+- `main` still supports only one sample per timestamp and rejects larger batches.
+
+```bash
+python exp/train_ktvgl.py --data-path data/observations.npy --dims 3 4 \
+  --dataset-id sensor-study --dataset-name "Sensor study" --dataset-version v1 \
+  --metadata-json data/metadata.json --base-dir runs
+```
+
+Do not pass synthetic `--breaks-json` or `--seeds-json` with external data.
+Sample counts and T are inferred; an explicit `--T` is checked against the file.
+Dataset IDs are safe ASCII path components (letters, digits, `_`, `-`, `.`);
+display names may contain Unicode. The ID defaults to `synthetic` for generated
+data or the input filename stem for external data; it can also come from metadata.
+CLI dataset ID/name/version override corresponding metadata fields.
+
+Example metadata (optional):
+
+```json
+{
+  "mode_names": ["sensor", "condition"],
+  "variable_names": [["A", "B", "C"], ["W", "X", "Y", "Z"]],
+  "time_values": ["t0", "t1", "t2", "t3", "t4", "t5"],
+  "time_kind": "observation_time",
+  "preprocessing": {"standardization": "performed upstream"}
+}
+```
+
+Coordinates are validated against array sizes; absent coordinates use integer time
+indices and generated mode/variable labels. External runs save both the source
+file SHA-256 and a canonical float64 observation hash, including time boundaries.
+Input observations themselves are not copied into the run. Ground truth and
+truth-dependent metrics are optional in both data paths; unknown metrics are
+`null`, never fabricated zeros. `AUPRC` denotes average precision; `bestF1` uses
+a threshold selected with ground truth and is not a deployment threshold.
+
+### Reading a run
+
+```python
+import json
+from pathlib import Path
+from ktvgl.common.results import load_precision
+
+run = Path("runs/<dataset-id>/KTVGL/<run-id>")
+config = json.loads((run / "config.json").read_text())
+summary = json.loads((run / "summary.json").read_text())
+estimated, truth = load_precision(run / "precision.npz")
+# estimated[t][m]: precision matrix; truth is None when unavailable.
+```
+
+Use `--no-plots` to skip figures, `--no-early-stopping` for a fixed outer iteration
+budget, and `--min-iter` to set the minimum outer iteration count. Input validation
+or fitting failures after run creation leave `summary.json` with `status: failed`
+and re-raise the original error.
+
+
+### Outer-iteration history and convergence plots (stage 2)
+
+Both synthetic and external-data runs write `history.csv` incrementally: one row
+is flushed after each completed outer sweep. A failed fit retains completed rows.
+`summary.json.history` records the file and row count. The final row's `total`
+is the same value used in `summary.json.final_objective` and outer stopping.
+
+| Column | Meaning |
+|---|---|
+| `iteration` | 1-based completed sweep; all modes have been updated |
+| `total` | Full objective, using the selected `psi` |
+| `data_fit` | Sample-summed negative log-likelihood term; constants and factor 1/2 omitted |
+| `sparsity` | Weighted off-diagonal L1 penalty |
+| `temporal` | Weighted temporal penalty (`l1` or `laplacian`) |
+| `relative_improvement` | `(previous total - total) / abs(previous total)`; negative means an increase |
+| `relative_precision_change` | Joint Frobenius change of all factors divided by `max(previous norm, 1e-12)` |
+| `elapsed_seconds` | Time since outer-loop entry; initialization is excluded |
+| `iteration_seconds` | Sweep, evaluation, and diagnostics, before writing the CSV |
+
+There is no initialization row. The first relative improvement is blank; it is
+also blank if the previous objective was zero. Missing/non-finite values are blank
+in CSV. Timing uses a monotonic clock. Factor changes include any gauge rescaling;
+they are diagnostics and do not alter the stopping rule. No matrix snapshots are
+persisted in the history.
+
+When plotting is enabled, these figures are generated **from the saved CSV**:
+
+- `figures/data_fit.png`: negative log-likelihood term versus outer iteration and
+  elapsed time. Lower values mean better data fit; regularization can make this
+  term increase even while the total decreases.
+- `figures/objective.png`: total objective versus outer iteration.
+- `figures/objective_terms.png`: data fit, sparsity, and temporal penalties on
+  separate panels to avoid hiding differences in scale.
+- `figures/objective_vs_time.png`: total objective versus outer-loop elapsed time.
+
+Plots use linear axes so negative objectives remain visible. `--no-plots` skips
+all figures but still saves the CSV. These are saved figures, not live displays.
+They require no ground truth. The inner ADMM objective is not the outer objective
+and is not plotted at this stage.
+
+For Python usage, both branches expose `model.objective_history_`. An optional
+`model.fit(X, iteration_callback=callback)` invokes `callback(row)` once per
+completed sweep. It receives a separate dictionary and does not change the
+existing precision return format. Callback exceptions propagate; completed rows
+remain in the model's history.
+
+Regenerate all four convergence figures without fitting again:
+
+```bash
+PYTHONPATH=src python -m ktvgl.common.replot runs/<dataset-id>/KTVGL/<run-id>
+```
+
+Or use `read_history(path)` and `plot_history(rows, output_dir)` from
+`ktvgl.common.history`. The `main` branch now also exposes
+`objective_terms(..., gamma=...)` for consistent component evaluation, including
+the optional gamma path. The normal `objective_function` APIs remain available.
+
+
+### Minimal KTVGL diagnostics (stage 3)
+
+These additions apply to normal KTVGL runs on both branches and both data sources.
+The other methods' experiment scripts retain their existing output formats.
+
+`inner_summary.csv` is flushed after each inner solve, with one row for each
+`(outer_iteration, mode)` pair. Outer iterations are 1-based; modes are 0-based
+and correspond to `config.json.dataset.coordinates.mode_names`.
+
+| Column | Meaning |
+|---|---|
+| `n_iter`, `max_iter` | Actual ADMM iterations and configured limit |
+| `converged` | `True` only when finite primal/dual residuals both satisfy their tolerances; `False` otherwise; blank when unavailable |
+| `stop_reason` | `residual_tolerance`, `max_iter`, `objective_target`, `unavailable`, or `error` |
+| `rnorm`, `snorm` | Final primal and dual residual norms, including diagonals |
+| `e_pri`, `e_dual` | Corresponding final stopping tolerances |
+| `solver_seconds` | Time spent in the solver call, excluding covariance construction and gauge correction |
+| `error` | Exception type and message, if a subproblem fails |
+
+Convergence on the final allowed iteration is counted as converged, not as an
+iteration-limit failure. An objective-target stop is evaluated separately from
+residual convergence. If an error occurs mid-solve, any residuals present are
+from its last completed ADMM iteration. Failed runs retain both completed rows
+and the failing subproblem's error row.
+
+`summary.json.inner_diagnostics` contains the subproblem count, converged,
+unconverged, unknown, iteration-limit and error counts, and `all_converged`.
+Unknown diagnostics are never counted as successful convergence. With no inner
+solves, `all_converged` is null; the CSV filename is null if it was never created.
+A run can have `status: completed` and still have unconverged subproblems. A
+warning is emitted when subproblems are unconverged or their status is unknown.
+
+`summary.json.numerical_diagnostics` checks the final factor precision matrices:
+
+- Matrix count, NaN/Inf counts, and `all_finite`.
+- Maximum relative symmetry error: `||A-A.T||_F / ||A||_F`, evaluated with scaling
+  for numerical stability. The symmetry tolerance is `1e-8`.
+- Minimum eigenvalue over symmetric parts `(A+A.T)/2`, and eigenvalue failures.
+  The minimum is null if any matrix is non-finite or eigenvalue computation fails.
+- `valid_precision`: all matrices finite, sufficiently symmetric, and strictly
+  positive definite. It is a numerical diagnostic, not a statistical accuracy claim.
+
+Invalid matrices emit a warning. Non-finite matrices are rejected by the artifact
+writer; their diagnostics and error details remain in the failed summary.
+Finite indefinite/asymmetric matrices may be saved for inspection and are marked
+invalid. No matrix is repaired or rescaled by these checks.
+
+`run.log` mirrors Python stdout/stderr from run setup onward, including progress,
+emitted warnings, start/end UTC timestamps, and exception tracebacks.
+`summary.json.warning_count` counts emitted Python warnings, respecting active
+warning filters; ordinary printed messages are not counted. Command-line parsing
+and failures before the run directory exists cannot be logged there. Logging is
+scoped to the CLI run and restores stdout/stderr and warning handlers on exit.
+Direct `fit()` usage does not redirect process output or create files.
+
+Python API additions preserve the existing precision return values:
+
+- The native KTVGL inner solver accepts optional `solver_info={}` and fills it
+  with final diagnostics without returning a different type.
+- `model.inner_history_` stores compact rows. `model.fit(X, inner_callback=fn)`
+  invokes `fn(row)` after each subproblem, alongside the existing outer callback.
+- Custom solvers that do not expose `solver_info` continue to run and are recorded
+  as `unavailable`. Optional arguments are selected from the callable signature;
+  solver-internal `TypeError` exceptions propagate and are not retried silently.
+
+Full ADMM iteration histories and diagnostic plots are deliberately not saved.
+The optimization updates, tolerances, and stopping conditions are unchanged.
