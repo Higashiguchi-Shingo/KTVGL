@@ -89,6 +89,7 @@ def main():
     X, Thetas = generate_kron_data(
         dims=args.dims, 
         breaks_list=args.breaks_list, 
+        seeds_list=args.seeds_list,
         T=args.T,
         p_edge=args.p_edge,
         w_range=tuple(args.wrange)

@@ -50,13 +50,6 @@ def squared_norm(x):
                       UserWarning)
     return np.dot(x, x)
 
-def off_diag_frobenius_square(X: np.ndarray) -> float:
-    ret = 0
-    T = X.shape[0]
-    for t in range(T):
-        ret += np.sum(X[t]**2) - np.sum(np.diag(X[t])**2)
-    return ret
-
 def logdet(A):
     """Compute log(det(A)) for A symmetric.
     Equivalent to : np.log(nl.det(A)) but more robust.
@@ -201,7 +194,8 @@ def time_varying_graphical_lasso(
     stop_when=1e-4,
     init='empirical', 
     init_inv_cov=None, # shape: (n_features, n_features)
-    psi="laplacian" # "laplacian" or "l1"
+    psi="laplacian", # "laplacian" or "l1"
+    solver_info=None
 ):
     """
     Time-Varying Graphical Lasso (TVGL) for time-varying covariance estimation.
@@ -237,6 +231,9 @@ def time_varying_graphical_lasso(
         If not None, stop the algorithm when the relative change in the objective function is less than this value. Default is 1e-4.
     init : str, optional
         Initialization method for the precision matrix. Default is 'empirical'.
+    solver_info : dict, optional
+        Updated with final ADMM residuals, tolerances, iteration count and stop reason.
+        The precision return value is unchanged.
     init_inv_cov : array-like, shape (n_features, n_features), optional
         Initial inverse covariance matrix. Default is None.
 
@@ -252,6 +249,11 @@ def time_varying_graphical_lasso(
         Number of iterations. Only returned if return_n_iter is True.
     """
     
+    if solver_info is not None:
+        solver_info.clear()
+        solver_info.update(n_iter=0, converged=False, stop_reason="running",
+                           rnorm=None, snorm=None, e_pri=None, e_dual=None, error=None)
+
     # psi, prox_psi, psi_node_penalty = check_norm_prox(psi)
     psi, prox_psi = check_norm_prox(psi)
 
@@ -341,12 +343,13 @@ def time_varying_graphical_lasso(
         U_1 += K[:-1] - Z_1
         U_2 += K[1:] - Z_2
         
+        # Consensus includes diagonal entries, even with off-diagonal sparsity.
         rnorm = np.sqrt(
-            off_diag_frobenius_square(K - Z_0) + off_diag_frobenius_square(K[:-1] - Z_1) + off_diag_frobenius_square(K[1:] - Z_2)
+            squared_norm(K - Z_0) + squared_norm(K[:-1] - Z_1) + squared_norm(K[1:] - Z_2)
         )
 
         snorm = rho * np.sqrt(
-            off_diag_frobenius_square(Z_0 - Z_0_old) + off_diag_frobenius_square(Z_1 - Z_1_old) + off_diag_frobenius_square(Z_2 - Z_2_old)
+            squared_norm(Z_0 - Z_0_old) + squared_norm(Z_1 - Z_1_old) + squared_norm(Z_2 - Z_2_old)
         )
 
         obj = objective(
@@ -359,13 +362,13 @@ def time_varying_graphical_lasso(
             snorm=snorm,
             e_pri=np.sqrt(K.size + 2 * Z_1.size) * tol + rtol * max(
                 np.sqrt(
-                    off_diag_frobenius_square(Z_0) + off_diag_frobenius_square(Z_1) + off_diag_frobenius_square(Z_2)),
+                    squared_norm(Z_0) + squared_norm(Z_1) + squared_norm(Z_2)),
                 np.sqrt(
-                    off_diag_frobenius_square(K) + off_diag_frobenius_square(K[:-1]) +
-                    off_diag_frobenius_square(K[1:]))
+                    squared_norm(K) + squared_norm(K[:-1]) +
+                    squared_norm(K[1:]))
                 ),
             e_dual=np.sqrt(K.size + 2 * Z_1.size) * tol + rtol * rho *
-            np.sqrt(off_diag_frobenius_square(U_0) + off_diag_frobenius_square(U_1) + off_diag_frobenius_square(U_2)),
+            np.sqrt(squared_norm(U_0) + squared_norm(U_1) + squared_norm(U_2)),
             # precision=Z_0.copy()
         )
 
@@ -380,12 +383,22 @@ def time_varying_graphical_lasso(
             )
 
         checks.append(check)
+        if solver_info is not None:
+            finite_residuals = np.isfinite([check.rnorm, check.snorm, check.e_pri, check.e_dual]).all()
+            solver_info.update(n_iter=iteration_ + 1,
+                               converged=bool(finite_residuals and check.rnorm <= check.e_pri and check.snorm <= check.e_dual),
+                               rnorm=float(check.rnorm), snorm=float(check.snorm),
+                               e_pri=float(check.e_pri), e_dual=float(check.e_dual))
         if stop_at is not None:
             if abs(check.obj - stop_at) / abs(stop_at) < stop_when:
+                if solver_info is not None:
+                    solver_info["stop_reason"] = "objective_target"
                 print("Early stopping criterion reached.", iteration_)
                 break
 
         if check.rnorm <= check.e_pri and check.snorm <= check.e_dual:
+            if solver_info is not None:
+                solver_info["stop_reason"] = "residual_tolerance"
             if verbose:
                 print("(Inner loop) Converged at iteration %d." % iteration_)
                 print(
@@ -402,6 +415,8 @@ def time_varying_graphical_lasso(
         rho = rho_new
 
     else:
+        if solver_info is not None:
+            solver_info["stop_reason"] = "max_iter"
         print("(Inner loop) Objective did not converge.")
         if verbose:
             print(

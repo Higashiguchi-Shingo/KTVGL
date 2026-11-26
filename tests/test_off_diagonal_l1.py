@@ -82,12 +82,11 @@ class OffDiagonalL1Tests(unittest.TestCase):
         ])
         for module in (ktvgl, tvgl):
             with self.subTest(module=module.__name__):
-                # Fixed iteration budget avoids relying on the existing
-                # off-diagonal-only convergence checks (a separate issue).
+                # Tight tolerances also verify the solution against KKT conditions.
                 with contextlib.redirect_stdout(io.StringIO()):
                     result = module.time_varying_graphical_lasso(
                         covariance, alpha=alpha, beta=0., max_iter=1000,
-                        tol=0., rtol=0., verbose=False,
+                        tol=1e-11, rtol=1e-11, verbose=False,
                     )
                 precision = result if module is ktvgl else result[0]
                 np.testing.assert_allclose(precision, expected, rtol=1e-7, atol=1e-9)

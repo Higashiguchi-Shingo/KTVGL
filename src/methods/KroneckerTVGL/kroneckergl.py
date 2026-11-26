@@ -2,9 +2,11 @@
 Time-varying Kronecker Graphical Lasso (TVKGL) for time-varying covariance estimation.
 """
 from copy import deepcopy
+from common.history import history_row
+from common.diagnostics import invoke_solver, record_inner
 import numpy as np
 from numpy.linalg import slogdet
-from .solver import time_varying_graphical_lasso
+from .solver import time_varying_graphical_lasso, check_norm_prox
 from .initialize import init_precision, _init_from_empirical
 from typing import List, Optional, Iterator
 import time
@@ -217,7 +219,8 @@ def update_one_mode_tvgl(
     verbose=False,
     gamma=None,
     psi="laplacian",
-    init_thetas: np.ndarray = None
+    init_thetas: np.ndarray = None,
+    solver_info=None
 ):
     """
     Update Thetas_seq once for mode m.
@@ -244,16 +247,11 @@ def update_one_mode_tvgl(
     prev_matrices = [Thetas_seq[t][mode].copy() for t in range(T)]
     lam_bar = lambda_m / D_minus
     rho_bar = rho_m / D_minus
-    Theta_m_seq = tvgl_solver(
-        emp_cov=S_hats, 
-        alpha=lam_bar,
-        beta=rho_bar,
-        max_iter=max_iter_tvgl,
-        prev_matrices=prev_matrices,
-        verbose=verbose,
-        psi=psi,
-        init_inv_cov=init_thetas
-    ) # (T, d_m, d_m)
+    solver_kwargs = dict(
+        emp_cov=S_hats, alpha=lam_bar, beta=rho_bar, max_iter=max_iter_tvgl,
+        prev_matrices=prev_matrices, verbose=verbose, psi=psi, init_inv_cov=init_thetas,
+    )
+    Theta_m_seq = invoke_solver(tvgl_solver, solver_kwargs, solver_info)
 
     # (c) Scale correction
     updated = [] # updated Thetas_seq, shape: (T, M, dm, dm)
@@ -308,49 +306,87 @@ def kronecker_timevarying_graphical_lasso(
     use_gamma: bool = False,
     psi: str = "laplacian", # "laplacian" or "l1"
     init_thetas: list[np.ndarray] = None,
-    early_stopping: bool = True
+    early_stopping: bool = True,
+    fit_info: Optional[dict] = None,
+    objective_history: Optional[list[dict]] = None,
+    iteration_callback=None,
+    inner_history=None,
+    inner_callback=None
 ):
+    if fit_info is not None:
+        fit_info.clear()
+        fit_info.update(stop_reason="max_iter", n_iter=0, final_objective=None)
     pre_obj = None
     gamma = 1 if use_gamma else None
     M = len(X_seq.shape[1:])
 
+    started = time.perf_counter()
+    record_history = objective_history is not None or iteration_callback is not None
+    record_subproblems = inner_history is not None or inner_callback is not None
     for iter in range(max_iter):
-        print("Iteration:", str(iter))
+        iteration_started = time.perf_counter()
+        previous_thetas = deepcopy(Thetas_seq) if record_history else None
+        print("Iteration:", str(iter + 1))
         for mode in range(M):
             if verbose: print("mode:", str(mode))
-            Thetas_seq, max_rel_change = update_one_mode_tvgl(
-                X_seq=X_seq,
-                Thetas_seq=Thetas_seq,
-                mode=mode,
-                lambda_m=lambdas[mode],
-                rho_m=rhos[mode],
-                tvgl_solver=tvgl_solver,
-                compute_Shat_func=compute_Shat_func,
-                max_iter_tvgl=max_iter_tvgl,
-                gauge=gauge,
-                strategy=strategy,
-                anchor=anchor,
-                verbose=verbose,
-                gamma=gamma,
-                psi=psi,
-                init_thetas=init_thetas[mode] if init_thetas is not None else None
-            )
+            info = {} if record_subproblems else None
+            try:
+                Thetas_seq, max_rel_change = update_one_mode_tvgl(
+                    X_seq=X_seq,
+                    Thetas_seq=Thetas_seq,
+                    mode=mode,
+                    lambda_m=lambdas[mode],
+                    rho_m=rhos[mode],
+                    tvgl_solver=tvgl_solver,
+                    compute_Shat_func=compute_Shat_func,
+                    max_iter_tvgl=max_iter_tvgl,
+                    gauge=gauge,
+                    strategy=strategy,
+                    anchor=anchor,
+                    verbose=verbose,
+                    gamma=gamma,
+                    psi=psi,
+                    init_thetas=init_thetas[mode] if init_thetas is not None else None,
+                    solver_info=info
+                )
+            except BaseException as error:
+                if record_subproblems:
+                    record_inner(info, iter + 1, mode, max_iter_tvgl,
+                                 inner_history, inner_callback, error=error)
+                raise
+            if record_subproblems:
+                record_inner(info, iter + 1, mode, max_iter_tvgl, inner_history, inner_callback)
             if use_gamma:
                 if iter % 1 == 0:
                     gamma = update_gamma(gamma, X_seq, Thetas_seq, compute_Shat_func)
                     print("Gamma:", gamma)
-        if use_gamma:
-            obj = objective_function_gamma(X_seq, Thetas_seq, lambdas, rhos, gamma)
-        else:
-            obj = objective_function(X_seq, Thetas_seq, lambdas, rhos)
+        terms = objective_terms(X_seq, Thetas_seq, lambdas, rhos, psi=psi, gamma=gamma)
+        obj = terms["total"]
+        print(
+            "Objective total:"
+            f" {obj:.6e}"
+            f" | data_fit: {terms['data_fit']:.6e}"
+            f" | sparsity: {terms['sparsity']:.6e}"
+            f" | temporal: {terms['temporal']:.6e}"
+        )
 
-        print("Score:", str(obj))
-
+        if fit_info is not None:
+            fit_info.update(n_iter=iter + 1, final_objective=float(obj))
+        if record_history:
+            row = history_row(iter + 1, terms, pre_obj, previous_thetas, Thetas_seq,
+                              started, iteration_started)
+            if objective_history is not None:
+                objective_history.append(row)
+            if iteration_callback is not None:
+                iteration_callback(row.copy())
         if pre_obj is not None:
             if ((pre_obj - obj) / np.abs(pre_obj)) < tol_flipflop:
                 if iter >= min_iter - 1:
                     if verbose: print("(Outer loop) Early stopping at iteration:", str(iter))
-                    if early_stopping: break
+                    if early_stopping:
+                        if fit_info is not None:
+                            fit_info["stop_reason"] = "objective_increase" if obj > pre_obj else "objective_tolerance"
+                        break
         pre_obj = obj
 
     if use_gamma:
@@ -415,8 +451,15 @@ class KroneckerTVGL:
         self.use_gamma = use_gamma
         self.psi = psi
         self.early_stopping = early_stopping
+        self.fit_info_: dict = {}
+        self.inner_history_: list[dict] = []
+        self.objective_history_: list[dict] = []
 
-    def fit(self, X_seq):
+    def fit(self, X_seq, *, iteration_callback=None, inner_callback=None):
+        """Fit and optionally call iteration_callback(row) after each completed sweep."""
+        self.fit_info_ = {}
+        self.inner_history_ = []
+        self.objective_history_ = []
         self.X_seq = X_seq
         self.dims = X_seq.shape[1:]
 
@@ -441,7 +484,12 @@ class KroneckerTVGL:
             verbose=self.verbose,
             use_gamma=self.use_gamma,
             psi=self.psi,
-            early_stopping=self.early_stopping
+            early_stopping=self.early_stopping,
+            fit_info=self.fit_info_,
+            objective_history=self.objective_history_,
+            iteration_callback=iteration_callback,
+            inner_history=self.inner_history_,
+            inner_callback=inner_callback
         )
         if self.use_gamma:
             self.Thetas_seq, self.gamma = _out
@@ -458,65 +506,51 @@ class KroneckerTVGL:
         return Thetas_seq
 
 
-def objective_function_gamma(X_seq, Thetas_seq, lambdas, rhos, gamma, mode=0):
+def objective_function_gamma(X_seq, Thetas_seq, lambdas, rhos, gamma, mode=0, psi="laplacian"):
+    return objective_terms(X_seq, Thetas_seq, lambdas, rhos, mode=mode, psi=psi, gamma=gamma)["total"]
+
+
+def objective_function(X_seq, Thetas_seq, lambdas, rhos, mode=0, psi="laplacian"):
+    return objective_terms(X_seq, Thetas_seq, lambdas, rhos, mode=mode, psi=psi)["total"]
+
+
+def objective_terms(X_seq, Thetas_seq, lambdas, rhos, mode=0, psi="laplacian", gamma=None):
+    """Evaluate the same objective for logging, history, and outer stopping."""
+    temporal_norm, _ = check_norm_prox(psi)
     T = X_seq.shape[0]
-    dims = X_seq.shape[1:]  # (d1,...,dM)
+    dims = X_seq.shape[1:]
     D = np.prod(dims)
     M = len(dims)
     assert 0 <= mode < M, "mode index out of range"
-
-    # Compute the objective function value
-    obj = 0.0
     S_hat = compute_Shat(X_seq, Thetas_seq, mode)
-
-    # log-likelihood terms
+    obj = 0.0
     for t in range(T):
         D_minus = int(np.prod([dims[k] for k in range(M) if k != mode]))
-        obj += gamma[t] * D_minus * np.trace(S_hat[t] @ Thetas_seq[t][mode])
+        if gamma is None:
+            obj += D_minus * np.trace(S_hat[t] @ Thetas_seq[t][mode])
+        else:
+            obj += gamma[t] * D_minus * np.trace(S_hat[t] @ Thetas_seq[t][mode])
         for m in range(M):
             D_minus = int(np.prod([dims[k] for k in range(M) if k != m]))
             obj -= D_minus * logdet(Thetas_seq[t][m])
-        obj -= D * np.log(gamma[t])
-
-    # L1 norm terms
+        if gamma is not None:
+            obj -= D * np.log(gamma[t])
+    data_fit = float(obj)
+    sparsity = 0.0
+    temporal = 0.0
+    # Keep the original total's accumulation order to preserve stopping behavior.
     for t in range(T):
         for m in range(M):
-            obj += lambdas[m] * l1_od_norm(Thetas_seq[t][m])
-
-    # TV regularization terms
-    for t in range(1,T):
+            penalty = lambdas[m] * l1_od_norm(Thetas_seq[t][m])
+            sparsity += penalty
+            obj += penalty
+    for t in range(1, T):
         for m in range(M):
-            obj += rhos[m] * squared_norm(Thetas_seq[t][m] - Thetas_seq[t-1][m])
-    return obj
+            penalty = rhos[m] * temporal_norm(Thetas_seq[t][m] - Thetas_seq[t-1][m])
+            temporal += penalty
+            obj += penalty
+    return dict(data_fit=data_fit, sparsity=float(sparsity), temporal=float(temporal), total=float(obj))
 
-def objective_function(X_seq, Thetas_seq, lambdas, rhos, mode=0):
-    T = X_seq.shape[0]
-    dims = X_seq.shape[1:]  # (d1,...,dM)
-    M = len(dims)
-    assert 0 <= mode < M, "mode index out of range"
-
-    # Compute the objective function value
-    obj = 0.0
-    S_hat = compute_Shat(X_seq, Thetas_seq, mode)
-
-    # log-likelihood terms
-    for t in range(T):
-        D_minus = int(np.prod([dims[k] for k in range(M) if k != mode]))
-        obj += D_minus * np.trace(S_hat[t] @ Thetas_seq[t][mode])
-        for m in range(M):
-            D_minus = int(np.prod([dims[k] for k in range(M) if k != m]))
-            obj -= D_minus * logdet(Thetas_seq[t][m])
-
-    # L1 norm terms
-    for t in range(T):
-        for m in range(M):
-            obj += lambdas[m] * l1_od_norm(Thetas_seq[t][m])
-
-    # TV regularization terms
-    for t in range(1,T):
-        for m in range(M):
-            obj += rhos[m] * squared_norm(Thetas_seq[t][m] - Thetas_seq[t-1][m])
-    return obj
 
 def squared_norm(x):
     """Squared Euclidean or Frobenius norm of x.
@@ -651,7 +685,8 @@ def scale_objective_with_gamma(
     lambdas: list[float],
     rhos: list[float],
     gauge: Optional[str] = None,
-    mode: int = 0
+    mode: int = 0,
+    psi: str = "laplacian"
 ):
     T = X_seq.shape[0]
     dims = X_seq.shape[1:]  # (d1,...,dM)
@@ -662,7 +697,7 @@ def scale_objective_with_gamma(
         Thetas_seq=Thetas_seq,
         gauge=gauge
     )
-    obj = objective_function_gamma(X_seq, Thhetas_seq_scaled, lambdas, rhos, gamma)
+    obj = objective_function_gamma(X_seq, Thhetas_seq_scaled, lambdas, rhos, gamma, psi=psi)
 
     return obj
     
